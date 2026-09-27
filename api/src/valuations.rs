@@ -24,7 +24,8 @@ async fn update_current_value(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateValueRequest>,
 ) -> Result<Json<Valuation>, AppError> {
-    let mut ledger = state.lock()?;
-    let valuation = ledger.update_current_value(id, req.new_value, &req.category, req.date)?;
+    let valuation = state
+        .with_ledger(move |ledger| ledger.update_current_value(id, req.new_value, &req.category, req.date))
+        .await?;
     Ok(Json(valuation))
 }

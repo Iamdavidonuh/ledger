@@ -38,26 +38,35 @@ pub fn router() -> Router<AppState> {
 
 async fn open_pot(State(state): State<AppState>, Json(req): Json<OpenPotRequest>) -> Result<Json<Pot>, AppError> {
     let currency = Currency::new(&req.currency).map_err(|e| AppError::bad_request(e.to_string()))?;
-    let mut ledger = state.lock()?;
-    let pot = ledger.open_pot(&req.name, currency, req.target, req.priority)?;
+    let pot = state
+        .with_ledger(move |ledger| ledger.open_pot(&req.name, currency, req.target, req.priority))
+        .await?;
     Ok(Json(pot))
 }
 
 async fn list_pots(State(state): State<AppState>) -> Result<Json<Vec<PotWithBalance>>, AppError> {
-    let ledger = state.lock()?;
-    let mut with_balances = Vec::new();
-    for pot in ledger.pots()? {
-        let balance = ledger.pot_balance(pot.id)?;
-        with_balances.push(PotWithBalance { pot, balance });
-    }
+    let with_balances = state
+        .with_ledger(|ledger| {
+            let mut with_balances = Vec::new();
+            for pot in ledger.pots()? {
+                let balance = ledger.pot_balance(pot.id)?;
+                with_balances.push(PotWithBalance { pot, balance });
+            }
+            Ok(with_balances)
+        })
+        .await?;
     Ok(Json(with_balances))
 }
 
 async fn get_pot(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<PotWithBalance>, AppError> {
-    let ledger = state.lock()?;
-    let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
-    let balance = ledger.pot_balance(id)?;
-    Ok(Json(PotWithBalance { pot, balance }))
+    let with_balance = state
+        .with_ledger(move |ledger| {
+            let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
+            let balance = ledger.pot_balance(id)?;
+            Ok(PotWithBalance { pot, balance })
+        })
+        .await?;
+    Ok(Json(with_balance))
 }
 
 async fn allocate(
@@ -65,9 +74,13 @@ async fn allocate(
     Path(id): Path<Uuid>,
     Json(req): Json<AllocateRequest>,
 ) -> Result<Json<PotWithBalance>, AppError> {
-    let mut ledger = state.lock()?;
-    ledger.allocate_to_pot(id, req.amount, req.date)?;
-    let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
-    let balance = ledger.pot_balance(id)?;
-    Ok(Json(PotWithBalance { pot, balance }))
+    let with_balance = state
+        .with_ledger(move |ledger| {
+            ledger.allocate_to_pot(id, req.amount, req.date)?;
+            let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
+            let balance = ledger.pot_balance(id)?;
+            Ok(PotWithBalance { pot, balance })
+        })
+        .await?;
+    Ok(Json(with_balance))
 }

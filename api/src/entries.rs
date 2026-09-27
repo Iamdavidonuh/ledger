@@ -81,8 +81,11 @@ async fn record_entry(
     Json(req): Json<RecordEntryRequest>,
 ) -> Result<Json<Entry>, AppError> {
     require_non_negative(req.amount)?;
-    let mut ledger = state.lock()?;
-    let entry = ledger.record_manual_entry(req.account_id, req.date, req.kind.signed(req.amount), &req.description)?;
+    let entry = state
+        .with_ledger(move |ledger| {
+            ledger.record_manual_entry(req.account_id, req.date, req.kind.signed(req.amount), &req.description)
+        })
+        .await?;
     Ok(Json(entry))
 }
 
@@ -90,8 +93,8 @@ async fn list_entries(
     State(state): State<AppState>,
     Query(q): Query<AccountIdQuery>,
 ) -> Result<Json<Vec<Entry>>, AppError> {
-    let ledger = state.lock()?;
-    Ok(Json(ledger.entries(q.account_id)?))
+    let entries = state.with_ledger(move |ledger| ledger.entries(q.account_id)).await?;
+    Ok(Json(entries))
 }
 
 async fn update_metadata(
@@ -99,8 +102,9 @@ async fn update_metadata(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateEntryMetadataRequest>,
 ) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state.lock()?;
-    let entry = ledger.update_entry_metadata(id, req.category, req.tags, req.note, req.pot_id)?;
+    let entry = state
+        .with_ledger(move |ledger| ledger.update_entry_metadata(id, req.category, req.tags, req.note, req.pot_id))
+        .await?;
     Ok(Json(entry))
 }
 
@@ -110,8 +114,9 @@ async fn edit_amount(
     Json(req): Json<EditAmountRequest>,
 ) -> Result<Json<Entry>, AppError> {
     require_non_negative(req.amount)?;
-    let mut ledger = state.lock()?;
-    let entry = ledger.edit_manual_entry_amount(id, req.kind.signed(req.amount))?;
+    let entry = state
+        .with_ledger(move |ledger| ledger.edit_manual_entry_amount(id, req.kind.signed(req.amount)))
+        .await?;
     Ok(Json(entry))
 }
 
@@ -120,14 +125,12 @@ async fn void_entry(
     Path(id): Path<Uuid>,
     Json(req): Json<VoidRequest>,
 ) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state.lock()?;
-    let entry = ledger.void_entry(id, &req.reason)?;
+    let entry = state.with_ledger(move |ledger| ledger.void_entry(id, &req.reason)).await?;
     Ok(Json(entry))
 }
 
 async fn confirm_entry(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state.lock()?;
-    let entry = ledger.confirm_entry(id)?;
+    let entry = state.with_ledger(move |ledger| ledger.confirm_entry(id)).await?;
     Ok(Json(entry))
 }
 

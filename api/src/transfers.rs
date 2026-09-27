@@ -32,14 +32,17 @@ async fn create_transfer(
     State(state): State<AppState>,
     Json(req): Json<TransferRequest>,
 ) -> Result<Json<TransferResponse>, AppError> {
-    let mut ledger = state.lock()?;
-    let (out_entry, in_entry) = ledger.transfer(
-        req.from_account_id,
-        req.to_account_id,
-        req.date,
-        req.amount_sent,
-        req.amount_received,
-        &req.description,
-    )?;
+    let (out_entry, in_entry) = state
+        .with_ledger(move |ledger| {
+            ledger.transfer(
+                req.from_account_id,
+                req.to_account_id,
+                req.date,
+                req.amount_sent,
+                req.amount_received,
+                &req.description,
+            )
+        })
+        .await?;
     Ok(Json(TransferResponse { out_entry, in_entry }))
 }
