@@ -214,7 +214,7 @@ impl LedgerStore for SqliteStore {
     }
 
     fn save_entry(&mut self, entry: Entry) -> Result<(), LedgerError> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         tx.execute(
             "INSERT INTO entries
                 (id, account_id, date, time, amount, currency, description, note, category,
@@ -246,7 +246,10 @@ impl LedgerStore for SqliteStore {
             ],
         )?;
         tx.execute("DELETE FROM entry_tags WHERE entry_id = ?1", rusqlite::params![entry.id.to_string()])?;
-        for tag in &entry.tags {
+        let mut unique_tags = entry.tags.clone();
+        unique_tags.sort();
+        unique_tags.dedup();
+        for tag in &unique_tags {
             tx.execute(
                 "INSERT INTO entry_tags (entry_id, tag) VALUES (?1, ?2)",
                 rusqlite::params![entry.id.to_string(), tag],
@@ -339,7 +342,7 @@ impl LedgerStore for SqliteStore {
     }
 
     fn save_entry_parts(&mut self, entry_id: Uuid, parts: Vec<EntryPart>) -> Result<(), LedgerError> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         tx.execute("DELETE FROM entry_parts WHERE entry_id = ?1", rusqlite::params![entry_id.to_string()])?;
         for part in &parts {
             tx.execute(
@@ -540,6 +543,28 @@ impl LedgerStore for SqliteStore {
             })
             .collect()
     }
+
+    // A raw SAVEPOINT rather than rusqlite's Transaction wrapper: the
+    // wrapper borrows self.conn for its own lifetime, which would leave no
+    // way to also lend `self` to `f`. SAVEPOINT also nests, unlike BEGIN, so
+    // it stays correct even though save_entry/save_entry_parts open their
+    // own savepoint when called from inside `f`.
+    fn transaction<F, T>(&mut self, f: F) -> Result<T, LedgerError>
+    where
+        F: FnOnce(&mut Self) -> Result<T, LedgerError>,
+    {
+        self.conn.execute_batch("SAVEPOINT ledger_txn")?;
+        match f(self) {
+            Ok(value) => {
+                self.conn.execute_batch("RELEASE SAVEPOINT ledger_txn")?;
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK TO SAVEPOINT ledger_txn; RELEASE SAVEPOINT ledger_txn");
+                Err(err)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -697,6 +722,30 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_transaction_rolls_back_everything_it_wrote() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account_id = account.id;
+        let result = store.transaction(|store| -> Result<(), LedgerError> {
+            store.save_account(account.clone())?;
+            Err(LedgerError::Storage("simulated mid-transaction failure".to_string()))
+        });
+        assert!(result.is_err());
+        assert_eq!(store.get_account(account_id).unwrap(), None);
+    }
+
+    #[test]
+    fn a_successful_transaction_commits_every_write_it_made() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account_id = account.id;
+        store
+            .transaction(|store| store.save_account(account.clone()))
+            .unwrap();
+        assert!(store.get_account(account_id).unwrap().is_some());
+    }
+
+    #[test]
     fn data_survives_closing_and_reopening_the_same_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ledger.sqlite3");
@@ -737,6 +786,18 @@ mod tests {
         let mut tags = read_back.tags.clone();
         tags.sort();
         assert_eq!(tags, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn saving_an_entry_with_a_duplicate_tag_deduplicates_rather_than_erroring() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        store.save_account(account.clone()).unwrap();
+        let mut entry = sample_entry(account.id);
+        entry.tags = vec!["food".to_string(), "food".to_string()];
+        store.save_entry(entry.clone()).unwrap();
+        let read_back = store.get_entry(entry.id).unwrap().unwrap();
+        assert_eq!(read_back.tags, vec!["food".to_string()]);
     }
 
     #[test]

@@ -23,6 +23,8 @@ pub enum LedgerError {
     PotWouldGoNegative,
     #[error("a cross-currency transfer needs an explicit amount received")]
     CrossCurrencyAmountRequired,
+    #[error("transfer amounts must be greater than zero")]
+    TransferAmountMustBePositive,
     #[error("an entry can only be tagged to a pot in the same currency")]
     PotCurrencyMismatch,
     #[error("storage error: {0}")]

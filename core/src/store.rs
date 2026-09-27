@@ -26,6 +26,15 @@ pub trait LedgerStore {
 
     fn save_valuation(&mut self, valuation: Valuation) -> Result<(), LedgerError>;
     fn valuations_for_account(&self, account_id: Uuid) -> Result<Vec<Valuation>, LedgerError>;
+
+    /// Runs `f` as one atomic unit: SqliteStore commits only if `f` returns
+    /// Ok, and rolls back everything `f` did otherwise, so a mutation that
+    /// needs more than one save (a transfer's two entries, a valuation plus
+    /// the account it updates) can't leave the store half-written.
+    fn transaction<F, T>(&mut self, f: F) -> Result<T, LedgerError>
+    where
+        F: FnOnce(&mut Self) -> Result<T, LedgerError>,
+        Self: Sized;
 }
 
 #[derive(Default)]
@@ -116,6 +125,13 @@ impl LedgerStore for InMemoryStore {
 
     fn valuations_for_account(&self, account_id: Uuid) -> Result<Vec<Valuation>, LedgerError> {
         Ok(self.valuations.get(&account_id).cloned().unwrap_or_default())
+    }
+
+    fn transaction<F, T>(&mut self, f: F) -> Result<T, LedgerError>
+    where
+        F: FnOnce(&mut Self) -> Result<T, LedgerError>,
+    {
+        f(self)
     }
 }
 

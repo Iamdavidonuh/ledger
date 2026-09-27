@@ -205,6 +205,14 @@ impl<S: LedgerStore> Ledger<S> {
         if reason.trim().is_empty() {
             return Err(LedgerError::VoidReasonRequired);
         }
+        // Voiding drops this entry out of entries_tagged_to_pot, so it needs
+        // the same never-below-zero check every other pot-affecting write applies.
+        if let Some(pot_id) = entry.pot_id {
+            let would_be = self.pot_balance(pot_id)? - entry.amount;
+            if would_be < Decimal::ZERO {
+                return Err(LedgerError::PotWouldGoNegative);
+            }
+        }
         entry.voided_reason = Some(reason.to_string());
         self.store.save_entry(entry.clone())?;
         Ok(entry)
@@ -219,6 +227,9 @@ impl<S: LedgerStore> Ledger<S> {
             .store
             .get_entry(entry_id)?
             .ok_or(LedgerError::EntryNotFound(entry_id))?;
+        if entry.is_voided() {
+            return Err(LedgerError::AlreadyVoided);
+        }
         let sum: Decimal = parts.iter().map(|(amount, _)| *amount).sum();
         if sum != entry.amount {
             return Err(LedgerError::PartsDoNotSumToAmount);
@@ -359,6 +370,9 @@ impl<S: LedgerStore> Ledger<S> {
         amount_received: Decimal,
         description: &str,
     ) -> Result<(Entry, Entry), LedgerError> {
+        if amount_sent <= Decimal::ZERO || amount_received <= Decimal::ZERO {
+            return Err(LedgerError::TransferAmountMustBePositive);
+        }
         let from = self
             .store
             .get_account(from_account)?
@@ -409,8 +423,10 @@ impl<S: LedgerStore> Ledger<S> {
             confirmed: false,
             voided_reason: None,
         };
-        self.store.save_entry(out_entry.clone())?;
-        self.store.save_entry(in_entry.clone())?;
+        self.store.transaction(|store| {
+            store.save_entry(out_entry.clone())?;
+            store.save_entry(in_entry.clone())
+        })?;
         Ok((out_entry, in_entry))
     }
 
@@ -446,8 +462,10 @@ impl<S: LedgerStore> Ledger<S> {
             category: category.to_string(),
         };
         account.current_value = Some(new_value);
-        self.store.save_account(account)?;
-        self.store.save_valuation(valuation.clone())?;
+        self.store.transaction(|store| {
+            store.save_account(account)?;
+            store.save_valuation(valuation.clone())
+        })?;
         Ok(valuation)
     }
 }
@@ -614,6 +632,31 @@ mod tests {
     }
 
     #[test]
+    fn voiding_a_pot_tagged_income_entry_that_would_push_the_pot_negative_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000)).unwrap();
+        let pot = ledger.open_pot("Camera", eur, None, None).unwrap();
+        let income = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(50), "Sold something")
+            .unwrap();
+        ledger
+            .update_entry_metadata(income.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        let expense = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-30), "Camera strap")
+            .unwrap();
+        ledger
+            .update_entry_metadata(expense.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        assert_eq!(
+            ledger.void_entry(income.id, "wrong account"),
+            Err(LedgerError::PotWouldGoNegative)
+        );
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+    }
+
+    #[test]
     fn splitting_an_entry_into_matching_parts_succeeds() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
@@ -645,6 +688,19 @@ mod tests {
         let result = ledger.split_entry(entry.id, vec![(dec!(-300), None), (dec!(-100), None)]);
         assert_eq!(result, Err(LedgerError::PartsDoNotSumToAmount));
         assert!(ledger.parts_for_entry(entry.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_voided_entry_cannot_be_split() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
+        let entry = ledger
+            .record_manual_entry(account.id, a_date(), dec!(-425), "Mixed payment")
+            .unwrap();
+        ledger.void_entry(entry.id, "wrong account").unwrap();
+        let result = ledger.split_entry(entry.id, vec![(dec!(-300), None), (dec!(-125), None)]);
+        assert_eq!(result, Err(LedgerError::AlreadyVoided));
     }
 
     #[test]
@@ -930,6 +986,28 @@ mod tests {
         let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0)).unwrap();
         let result = ledger.transfer(a.id, b.id, a_date(), dec!(40), dec!(35), "move");
         assert_eq!(result, Err(LedgerError::CrossCurrencyAmountRequired));
+    }
+
+    #[test]
+    fn a_transfer_with_a_negative_amount_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let a = ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0)).unwrap();
+        let result = ledger.transfer(a.id, b.id, a_date(), dec!(-40), dec!(-40), "move");
+        assert_eq!(result, Err(LedgerError::TransferAmountMustBePositive));
+        assert_eq!(ledger.account_balance(a.id), Ok(dec!(100)));
+        assert_eq!(ledger.account_balance(b.id), Ok(dec!(0)));
+    }
+
+    #[test]
+    fn a_transfer_of_zero_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let a = ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0)).unwrap();
+        let result = ledger.transfer(a.id, b.id, a_date(), dec!(0), dec!(0), "move");
+        assert_eq!(result, Err(LedgerError::TransferAmountMustBePositive));
     }
 
     #[test]
