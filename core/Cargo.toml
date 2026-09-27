@@ -1,0 +1,19 @@
+[package]
+name = "ledger-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+rust_decimal_macros = "1"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
