@@ -31,7 +31,7 @@
 	{:else if accounts.length === 0}
 		<p class="text-sm text-muted">No accounts yet.</p>
 	{:else}
-		<div class="flex flex-col gap-2.5">
+		<div class="flex flex-col gap-2.5 lg:grid lg:grid-cols-2 lg:gap-4 xl:grid-cols-3">
 			{#each accounts as account (account.id)}
 				<Card class={account.archived ? 'opacity-50' : ''}>
 					<CardContent class="flex items-center justify-between pt-5">

@@ -32,7 +32,7 @@
 	{:else if pots.length === 0}
 		<p class="text-sm text-muted">No pots yet.</p>
 	{:else}
-		<div class="flex flex-col gap-2.5">
+		<div class="flex flex-col gap-2.5 lg:grid lg:grid-cols-2 lg:gap-4 xl:grid-cols-3">
 			{#each pots as pot (pot.id)}
 				<Card>
 					<CardContent class="pt-4">

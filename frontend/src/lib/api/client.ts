@@ -70,6 +70,12 @@ export const api = {
 	},
 	entries: {
 		list: (accountId: string) => get<Entry[]>(`/entries?account_id=${accountId}`),
+		// GET /entries has no "every account" mode, so this is the fan-out
+		// Home and Stats both need to compute a totals across the ledger.
+		listForAccounts: async (accountIds: string[]): Promise<Entry[]> => {
+			const perAccount = await Promise.all(accountIds.map((id) => get<Entry[]>(`/entries?account_id=${id}`)));
+			return perAccount.flat();
+		},
 		record: (req: RecordEntryRequest) => post<Entry>('/entries', req),
 		updateMetadata: (id: string, req: UpdateEntryMetadataRequest) => patch<Entry>(`/entries/${id}`, req),
 		editAmount: (id: string, req: EditAmountRequest) => patch<Entry>(`/entries/${id}/amount`, req),

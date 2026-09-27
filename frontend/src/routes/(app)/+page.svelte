@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, ApiError, type AccountWithBalance, type PotWithBalance } from '$lib/api';
-	import { Card, CardHeader, CardTitle, CardContent } from '$lib/components/ui/card';
+	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Progress } from '$lib/components/ui/progress';
 	import { formatMoney } from '$lib/format';
+	import { startOfCurrentMonth } from '$lib/dates';
+	import { Button } from '$lib/components/ui/button';
 
 	let accounts = $state<AccountWithBalance[]>([]);
 	let pots = $state<PotWithBalance[]>([]);
@@ -49,26 +51,21 @@
 			accounts = accountList;
 			pots = potList;
 
-			const startOfMonth = new Date();
-			startOfMonth.setDate(1);
-			startOfMonth.setHours(0, 0, 0, 0);
-
+			const startOfMonth = startOfCurrentMonth();
 			const inTotals: Record<string, number> = {};
 			const outTotals: Record<string, number> = {};
-			const perAccountEntries = await Promise.all(accountList.map((account) => api.entries.list(account.id)));
-			for (const entries of perAccountEntries) {
-				for (const entry of entries) {
-					// Voided entries don't count, and a transfer is neither
-					// income nor spending, just money changing accounts.
-					if (entry.voided_reason !== null) continue;
-					if (entry.transfer_account_id !== null) continue;
-					if (new Date(entry.date) < startOfMonth) continue;
-					const amount = Number(entry.amount);
-					if (amount >= 0) {
-						inTotals[entry.currency] = (inTotals[entry.currency] ?? 0) + amount;
-					} else {
-						outTotals[entry.currency] = (outTotals[entry.currency] ?? 0) - amount;
-					}
+			const entries = await api.entries.listForAccounts(accountList.map((a) => a.id));
+			for (const entry of entries) {
+				// Voided entries don't count, and a transfer is neither
+				// income nor spending, just money changing accounts.
+				if (entry.voided_reason !== null) continue;
+				if (entry.transfer_account_id !== null) continue;
+				if (new Date(entry.date) < startOfMonth) continue;
+				const amount = Number(entry.amount);
+				if (amount >= 0) {
+					inTotals[entry.currency] = (inTotals[entry.currency] ?? 0) + amount;
+				} else {
+					outTotals[entry.currency] = (outTotals[entry.currency] ?? 0) - amount;
 				}
 			}
 			monthIn = inTotals;
@@ -82,6 +79,16 @@
 </script>
 
 <div class="flex flex-col gap-4">
+	<div class="hidden items-center justify-between lg:flex">
+		<div class="font-display text-2xl font-bold">Home</div>
+		<Button href="/add-entry">
+			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"
+				><path d="M12 5v14M5 12h14"></path></svg
+			>
+			Add entry
+		</Button>
+	</div>
+
 	{#if loading}
 		<p class="text-sm text-muted">Loading...</p>
 	{:else if error}
@@ -91,11 +98,13 @@
 	{:else}
 		{#each [...netWorthByCurrency.entries()] as [currency, total] (currency)}
 			<Card>
-				<CardHeader>
-					<CardTitle>Net worth{netWorthByCurrency.size > 1 ? ` (${currency})` : ''}</CardTitle>
-					<div class="font-display text-4xl font-bold">{formatMoney(total, currency)}</div>
-				</CardHeader>
-				<CardContent>
+				<div class="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between lg:gap-6">
+					<div>
+						<div class="text-xs font-semibold tracking-wide text-muted uppercase">
+							Net worth{netWorthByCurrency.size > 1 ? ` (${currency})` : ''}
+						</div>
+						<div class="font-display text-4xl font-bold">{formatMoney(total, currency)}</div>
+					</div>
 					<div class="flex flex-wrap gap-2">
 						{#each accounts.filter((a) => a.kind === 'own' && a.currency === currency) as account (account.id)}
 							<div class="flex items-center gap-1.5 rounded-lg bg-page px-2.5 py-1.5 text-xs">
@@ -104,60 +113,62 @@
 							</div>
 						{/each}
 					</div>
-				</CardContent>
+				</div>
 			</Card>
 		{/each}
 
-		{#if pots.length > 0}
-			<div class="flex flex-col gap-2.5">
-				<div class="flex items-baseline justify-between">
-					<div class="text-xs font-semibold tracking-wide text-muted uppercase">Pots</div>
-					<a href="/pots" class="text-sm font-semibold text-primary">See all</a>
+		<div class="flex flex-col gap-4 lg:grid lg:grid-cols-[2fr_1fr] lg:items-start lg:gap-6">
+			{#if pots.length > 0}
+				<div class="flex flex-col gap-2.5">
+					<div class="flex items-baseline justify-between">
+						<div class="text-xs font-semibold tracking-wide text-muted uppercase">Pots</div>
+						<a href="/pots" class="text-sm font-semibold text-primary">See all</a>
+					</div>
+					{#each pots as pot (pot.id)}
+						<a href="/pots" class="block rounded-2xl border border-border bg-card p-4 hover:bg-row-hover">
+							<div class="mb-2 flex items-baseline justify-between">
+								<div class="text-sm font-semibold">{pot.name}</div>
+								<div class="font-display text-xs text-muted">
+									{formatMoney(Number(pot.balance), pot.currency)}{#if pot.target}
+										/ {formatMoney(Number(pot.target), pot.currency)}{/if}
+								</div>
+							</div>
+							{#if pot.target}
+								<Progress value={Number(pot.balance)} max={Number(pot.target)} />
+							{/if}
+						</a>
+					{/each}
+					{#each [...netWorthByCurrency.keys()] as currency (currency)}
+						<div class="flex items-center justify-between rounded-2xl border border-dashed border-border-dashed bg-card p-4">
+							<div>
+								<div class="text-sm font-semibold text-muted">
+									General savings{netWorthByCurrency.size > 1 ? ` (${currency})` : ''}
+								</div>
+								<div class="text-xs text-muted-2">Not set aside for anything</div>
+							</div>
+							<div class="font-display text-[15px] font-bold">{formatMoney(generalSavings(currency), currency)}</div>
+						</div>
+					{/each}
 				</div>
-				{#each pots as pot (pot.id)}
-					<a href="/pots" class="block rounded-2xl border border-border bg-card p-4 hover:bg-row-hover">
-						<div class="mb-2 flex items-baseline justify-between">
-							<div class="text-sm font-semibold">{pot.name}</div>
-							<div class="font-display text-xs text-muted">
-								{formatMoney(Number(pot.balance), pot.currency)}{#if pot.target}
-									/ {formatMoney(Number(pot.target), pot.currency)}{/if}
+			{/if}
+
+			<div class="flex flex-col gap-2.5">
+				<div class="text-xs font-semibold tracking-wide text-muted uppercase">This month</div>
+				{#each Object.keys({ ...monthIn, ...monthOut }) as currency (currency)}
+					<div class="flex gap-2.5 lg:flex-col lg:gap-3 lg:rounded-2xl lg:border lg:border-border lg:bg-card lg:p-4">
+						<div class="flex flex-1 flex-col gap-1 rounded-2xl border border-border bg-card p-3.5 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0">
+							<div class="text-xs text-muted">In ({currency})</div>
+							<div class="font-display text-lg font-bold text-primary">
+								+{formatMoney(monthIn[currency] ?? 0, currency)}
 							</div>
 						</div>
-						{#if pot.target}
-							<Progress value={Number(pot.balance)} max={Number(pot.target)} />
-						{/if}
-					</a>
-				{/each}
-				{#each [...netWorthByCurrency.keys()] as currency (currency)}
-					<div class="flex items-center justify-between rounded-2xl border border-dashed border-border-dashed bg-card p-4">
-						<div>
-							<div class="text-sm font-semibold text-muted">
-								General savings{netWorthByCurrency.size > 1 ? ` (${currency})` : ''}
-							</div>
-							<div class="text-xs text-muted-2">Not set aside for anything</div>
+						<div class="flex flex-1 flex-col gap-1 rounded-2xl border border-border bg-card p-3.5 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0">
+							<div class="text-xs text-muted">Out ({currency})</div>
+							<div class="font-display text-lg font-bold">&minus;{formatMoney(monthOut[currency] ?? 0, currency)}</div>
 						</div>
-						<div class="font-display text-[15px] font-bold">{formatMoney(generalSavings(currency), currency)}</div>
 					</div>
 				{/each}
 			</div>
-		{/if}
-
-		<div class="flex flex-col gap-2.5">
-			<div class="text-xs font-semibold tracking-wide text-muted uppercase">This month</div>
-			{#each Object.keys({ ...monthIn, ...monthOut }) as currency (currency)}
-				<div class="flex gap-2.5">
-					<div class="flex flex-1 flex-col gap-1 rounded-2xl border border-border bg-card p-3.5">
-						<div class="text-xs text-muted">In ({currency})</div>
-						<div class="font-display text-lg font-bold text-primary">
-							+{formatMoney(monthIn[currency] ?? 0, currency)}
-						</div>
-					</div>
-					<div class="flex flex-1 flex-col gap-1 rounded-2xl border border-border bg-card p-3.5">
-						<div class="text-xs text-muted">Out ({currency})</div>
-						<div class="font-display text-lg font-bold">&minus;{formatMoney(monthOut[currency] ?? 0, currency)}</div>
-					</div>
-				</div>
-			{/each}
 		</div>
 	{/if}
 </div>
