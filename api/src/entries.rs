@@ -24,6 +24,15 @@ impl EntryKind {
     }
 }
 
+fn require_non_negative(amount: Decimal) -> Result<(), AppError> {
+    if amount < Decimal::ZERO {
+        return Err(AppError::bad_request(
+            "amount must be zero or positive; use kind to say expense or income",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 pub struct RecordEntryRequest {
     pub account_id: Uuid,
@@ -71,15 +80,8 @@ async fn record_entry(
     State(state): State<AppState>,
     Json(req): Json<RecordEntryRequest>,
 ) -> Result<Json<Entry>, AppError> {
-    if req.amount < Decimal::ZERO {
-        return Err(AppError::bad_request(
-            "amount must be zero or positive; use kind to say expense or income",
-        ));
-    }
-    let mut ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    require_non_negative(req.amount)?;
+    let mut ledger = state.lock()?;
     let entry = ledger.record_manual_entry(req.account_id, req.date, req.kind.signed(req.amount), &req.description)?;
     Ok(Json(entry))
 }
@@ -88,10 +90,7 @@ async fn list_entries(
     State(state): State<AppState>,
     Query(q): Query<AccountIdQuery>,
 ) -> Result<Json<Vec<Entry>>, AppError> {
-    let ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let ledger = state.lock()?;
     Ok(Json(ledger.entries(q.account_id)?))
 }
 
@@ -100,10 +99,7 @@ async fn update_metadata(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateEntryMetadataRequest>,
 ) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let mut ledger = state.lock()?;
     let entry = ledger.update_entry_metadata(id, req.category, req.tags, req.note, req.pot_id)?;
     Ok(Json(entry))
 }
@@ -113,15 +109,8 @@ async fn edit_amount(
     Path(id): Path<Uuid>,
     Json(req): Json<EditAmountRequest>,
 ) -> Result<Json<Entry>, AppError> {
-    if req.amount < Decimal::ZERO {
-        return Err(AppError::bad_request(
-            "amount must be zero or positive; use kind to say expense or income",
-        ));
-    }
-    let mut ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    require_non_negative(req.amount)?;
+    let mut ledger = state.lock()?;
     let entry = ledger.edit_manual_entry_amount(id, req.kind.signed(req.amount))?;
     Ok(Json(entry))
 }
@@ -131,19 +120,13 @@ async fn void_entry(
     Path(id): Path<Uuid>,
     Json(req): Json<VoidRequest>,
 ) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let mut ledger = state.lock()?;
     let entry = ledger.void_entry(id, &req.reason)?;
     Ok(Json(entry))
 }
 
 async fn confirm_entry(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let mut ledger = state.lock()?;
     let entry = ledger.confirm_entry(id)?;
     Ok(Json(entry))
 }

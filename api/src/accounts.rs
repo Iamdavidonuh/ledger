@@ -33,19 +33,13 @@ async fn create_account(
     Json(req): Json<CreateAccountRequest>,
 ) -> Result<Json<Account>, AppError> {
     let currency = Currency::new(&req.currency).map_err(|e| AppError::bad_request(e.to_string()))?;
-    let mut ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let mut ledger = state.lock()?;
     let account = ledger.open_account(&req.name, currency, req.kind, req.opening_balance)?;
     Ok(Json(account))
 }
 
 async fn list_accounts(State(state): State<AppState>) -> Result<Json<Vec<AccountWithBalance>>, AppError> {
-    let ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let ledger = state.lock()?;
     let mut with_balances = Vec::new();
     for account in ledger.accounts()? {
         let balance = ledger.account_balance(account.id)?;
@@ -58,10 +52,7 @@ async fn get_account(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountWithBalance>, AppError> {
-    let ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let ledger = state.lock()?;
     let account = ledger.account(id)?.ok_or(LedgerError::AccountNotFound(id))?;
     let balance = ledger.account_balance(id)?;
     Ok(Json(AccountWithBalance { account, balance }))

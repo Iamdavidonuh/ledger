@@ -32,10 +32,7 @@ async fn create_transfer(
     State(state): State<AppState>,
     Json(req): Json<TransferRequest>,
 ) -> Result<Json<TransferResponse>, AppError> {
-    let mut ledger = state
-        .ledger
-        .lock()
-        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let mut ledger = state.lock()?;
     let (out_entry, in_entry) = ledger.transfer(
         req.from_account_id,
         req.to_account_id,
