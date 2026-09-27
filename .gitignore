@@ -15,6 +15,10 @@ build/
 values.secret.yaml
 *.secret.yaml
 
+# Local-only notes (handover notes, specs, scratch), never committed
+*.local.md
+*.local
+
 # Helm packaging output
 *.tgz
 charts/*/charts/
