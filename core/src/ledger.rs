@@ -93,6 +93,16 @@ impl<S: LedgerStore> Ledger<S> {
         if entry.source != EntrySource::Manual || entry.confirmed {
             return Err(LedgerError::EntryLocked);
         }
+        // If this entry is tagged to a pot, changing its amount changes
+        // that pot's balance too (pot_balance sums tagged entries directly),
+        // so it needs the same never-below-zero check allocate_to_pot and
+        // update_entry_metadata already apply.
+        if let Some(pot_id) = entry.pot_id {
+            let would_be = self.pot_balance(pot_id)? - entry.amount + new_amount;
+            if would_be < Decimal::ZERO {
+                return Err(LedgerError::PotWouldGoNegative);
+            }
+        }
         entry.amount = new_amount;
         self.store.save_entry(entry.clone());
         Ok(entry)
@@ -104,7 +114,9 @@ impl<S: LedgerStore> Ledger<S> {
     /// other entry-changing methods. Moving a tag onto or off a pot is
     /// checked against that pot's never-below-zero floor the same way an
     /// allocation is, since a tagged expense draws a pot down exactly like
-    /// an allocation would.
+    /// an allocation would. A new pot must be in the entry's own currency;
+    /// pot_balance sums tagged entries' raw amounts, so a mismatched
+    /// currency would otherwise mix units in that pot's total.
     pub fn update_entry_metadata(
         &mut self,
         entry_id: Uuid,
@@ -128,9 +140,13 @@ impl<S: LedgerStore> Ledger<S> {
                 }
             }
             if let Some(new_pot) = pot_id {
-                self.store
+                let pot = self
+                    .store
                     .get_pot(new_pot)
                     .ok_or(LedgerError::PotNotFound(new_pot))?;
+                if entry.currency != pot.currency {
+                    return Err(LedgerError::PotCurrencyMismatch);
+                }
                 let would_be = self.pot_balance(new_pot)? + entry.amount;
                 if would_be < Decimal::ZERO {
                     return Err(LedgerError::PotWouldGoNegative);
@@ -777,6 +793,58 @@ mod tests {
         ledger.void_entry(entry.id, "wrong amount").unwrap();
         let result = ledger.update_entry_metadata(entry.id, Some("Groceries".to_string()), Vec::new(), None, None);
         assert_eq!(result, Err(LedgerError::AlreadyVoided));
+    }
+
+    #[test]
+    fn tagging_an_entry_to_a_pot_in_a_different_currency_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let usd = Currency::new("USD").unwrap();
+        let card = ledger.open_account("Card", usd, AccountKind::Own, dec!(0));
+        let pot = ledger.open_pot("Camera", eur, None, None);
+        let entry = ledger
+            .record_manual_entry(card.id, a_date(), dec!(-50), "x")
+            .unwrap();
+        let result = ledger.update_entry_metadata(entry.id, None, Vec::new(), None, Some(pot.id));
+        assert_eq!(result, Err(LedgerError::PotCurrencyMismatch));
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(0)));
+    }
+
+    #[test]
+    fn editing_the_amount_of_a_pot_tagged_entry_that_would_push_the_pot_negative_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
+        let pot = ledger.open_pot("Camera", eur, None, None);
+        ledger.allocate_to_pot(pot.id, dec!(500), a_date()).unwrap();
+        let entry = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-100), "Lens")
+            .unwrap();
+        ledger
+            .update_entry_metadata(entry.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(400)));
+
+        let result = ledger.edit_manual_entry_amount(entry.id, dec!(-600));
+        assert_eq!(result, Err(LedgerError::PotWouldGoNegative));
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(400)));
+    }
+
+    #[test]
+    fn editing_the_amount_of_a_pot_tagged_entry_within_the_pots_means_succeeds() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
+        let pot = ledger.open_pot("Camera", eur, None, None);
+        ledger.allocate_to_pot(pot.id, dec!(500), a_date()).unwrap();
+        let entry = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-100), "Lens")
+            .unwrap();
+        ledger
+            .update_entry_metadata(entry.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        ledger.edit_manual_entry_amount(entry.id, dec!(-150)).unwrap();
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(350)));
     }
 
     #[test]
