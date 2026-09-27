@@ -78,6 +78,18 @@ impl<S: LedgerStore> Ledger<S> {
         Ok(account.opening_balance + posted)
     }
 
+    pub fn accounts(&self) -> Vec<Account> {
+        self.store.all_accounts()
+    }
+
+    pub fn pots(&self) -> Vec<Pot> {
+        self.store.all_pots()
+    }
+
+    pub fn entries(&self, account_id: Uuid) -> Vec<Entry> {
+        self.store.entries_for_account(account_id)
+    }
+
     pub fn edit_manual_entry_amount(
         &mut self,
         entry_id: Uuid,
@@ -845,6 +857,34 @@ mod tests {
             .unwrap();
         ledger.edit_manual_entry_amount(entry.id, dec!(-150)).unwrap();
         assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(350)));
+    }
+
+    #[test]
+    fn accounts_lists_every_open_account() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(0));
+        ledger.open_account("B", eur, AccountKind::Own, dec!(0));
+        assert_eq!(ledger.accounts().len(), 2);
+    }
+
+    #[test]
+    fn pots_lists_every_open_pot() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        ledger.open_pot("A", eur.clone(), None, None);
+        ledger.open_pot("B", eur, None, None);
+        assert_eq!(ledger.pots().len(), 2);
+    }
+
+    #[test]
+    fn entries_lists_every_entry_for_an_account() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        ledger.record_manual_entry(account.id, a_date(), dec!(-10), "x").unwrap();
+        ledger.record_manual_entry(account.id, a_date(), dec!(-5), "y").unwrap();
+        assert_eq!(ledger.entries(account.id).len(), 2);
     }
 
     #[test]

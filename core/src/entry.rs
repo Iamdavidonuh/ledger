@@ -4,12 +4,14 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum EntrySource {
     Manual,
     Imported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BankState {
     Completed,
     Pending,
