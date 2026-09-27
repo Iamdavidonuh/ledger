@@ -3,6 +3,15 @@
 // generated. `.expect()` and `panic!()` here document an invariant, not a
 // real failure mode reachable from untrusted input, so they are allowed
 // here specifically rather than crate-wide.
+//
+// This holds only as long as every stored enum string stays valid across
+// the life of the database file, which outlives any single process run. If
+// a future migration ever renames an enum's stored string (for example
+// AccountKind::Own's "own"), that migration MUST also UPDATE every existing
+// row to the new string. A mismatch here after that is a missed data
+// migration, not user input, and panicking loudly on it is the correct
+// behaviour: it surfaces the bug immediately rather than silently
+// misreading old data as something else.
 #![allow(clippy::expect_used, clippy::panic)]
 
 use crate::account::{Account, AccountKind};
@@ -439,6 +448,14 @@ impl LedgerStore for SqliteStore {
         .collect()
     }
 
+    // Unlike every other save_* method, this is a plain INSERT with no
+    // ON CONFLICT DO UPDATE, and that is intentional: a valuation is a
+    // historical fact recording one value change, never edited afterwards.
+    // The Ledger engine always calls update_current_value with a freshly
+    // generated id for each new valuation, so a save with a colliding id
+    // should never happen; if it does, that is a bug in the caller (a
+    // reused id), not a normal database condition, and the panic below is
+    // meant to surface that immediately.
     fn save_valuation(&mut self, valuation: Valuation) {
         self.conn
             .execute(
@@ -453,7 +470,11 @@ impl LedgerStore for SqliteStore {
                     valuation.category,
                 ],
             )
-            .expect("writing a valuation should not fail against a healthy database");
+            .expect(
+                "writing a valuation should not fail: valuation ids are freshly generated \
+                 by the ledger engine and never reused, so a collision here means a caller \
+                 reused an id, which is a bug, not a normal database condition",
+            );
     }
 
     fn valuations_for_account(&self, account_id: Uuid) -> Vec<Valuation> {
@@ -550,6 +571,63 @@ mod tests {
         let id = account.id;
         store.save_account(account);
         assert_eq!(store.get_account(id).unwrap().opening_balance, dec!(-1042.50));
+    }
+
+    #[test]
+    fn a_large_amount_with_many_decimal_places_round_trips_exactly() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(1234567.123456789),
+        );
+        let id = account.id;
+        store.save_account(account);
+        assert_eq!(
+            store.get_account(id).unwrap().opening_balance,
+            dec!(1234567.123456789)
+        );
+    }
+
+    #[test]
+    fn an_entry_with_a_time_round_trips_exactly() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        store.save_account(account.clone());
+        let mut entry = sample_entry(account.id);
+        entry.time = Some(chrono::NaiveTime::from_hms_opt(14, 32, 7).unwrap());
+        store.save_entry(entry.clone());
+        assert_eq!(store.get_entry(entry.id).unwrap().time, entry.time);
+    }
+
+    #[test]
+    fn an_entry_with_a_time_including_fractional_seconds_round_trips_exactly() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        store.save_account(account.clone());
+        let mut entry = sample_entry(account.id);
+        entry.time = Some(chrono::NaiveTime::from_hms_milli_opt(14, 32, 7, 250).unwrap());
+        store.save_entry(entry.clone());
+        assert_eq!(store.get_entry(entry.id).unwrap().time, entry.time);
+    }
+
+    #[test]
+    #[should_panic(expected = "a caller reused an id")]
+    fn saving_a_valuation_with_a_reused_id_panics_rather_than_silently_overwriting() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let account = Account::new("An ETF position", Currency::new("EUR").unwrap(), AccountKind::Investment, dec!(1000));
+        store.save_account(account.clone());
+        let valuation = Valuation {
+            id: Uuid::new_v4(),
+            account_id: account.id,
+            date: a_date(),
+            old_value: dec!(1000),
+            new_value: dec!(1042),
+            category: "Investment gain".to_string(),
+        };
+        store.save_valuation(valuation.clone());
+        store.save_valuation(valuation);
     }
 
     #[test]
