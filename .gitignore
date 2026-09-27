@@ -18,6 +18,7 @@ values.secret.yaml
 # Local-only notes (handover notes, specs, scratch), never committed
 *.local.md
 *.local
+docs/superpowers/
 
 # Helm packaging output
 *.tgz
