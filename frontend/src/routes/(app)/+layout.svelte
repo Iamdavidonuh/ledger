@@ -33,8 +33,10 @@
 		</a>
 	</div>
 
-	<!-- Scroll area -->
-	<div class="flex-1 overflow-y-auto px-5 pt-2 pb-6">
+	<!-- Scroll area. Extra bottom padding on Home only: the FAB there sits
+	     at bottom-[92px] with its own 52px height, so content needs to
+	     clear roughly 144px, not just the bottom nav's height. -->
+	<div class="flex-1 overflow-y-auto px-5 pt-2 {page.url.pathname === '/' ? 'pb-40' : 'pb-6'}">
 		{@render children()}
 	</div>
 

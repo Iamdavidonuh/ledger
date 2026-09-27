@@ -131,7 +131,9 @@
 				{#each [...netWorthByCurrency.keys()] as currency (currency)}
 					<div class="flex items-center justify-between rounded-2xl border border-dashed border-border-dashed bg-card p-4">
 						<div>
-							<div class="text-sm font-semibold text-muted">General savings</div>
+							<div class="text-sm font-semibold text-muted">
+								General savings{netWorthByCurrency.size > 1 ? ` (${currency})` : ''}
+							</div>
 							<div class="text-xs text-muted-2">Not set aside for anything</div>
 						</div>
 						<div class="font-display text-[15px] font-bold">{formatMoney(generalSavings(currency), currency)}</div>
@@ -142,8 +144,8 @@
 
 		<div class="flex flex-col gap-2.5">
 			<div class="text-xs font-semibold tracking-wide text-muted uppercase">This month</div>
-			<div class="flex gap-2.5">
-				{#each Object.keys({ ...monthIn, ...monthOut }) as currency (currency)}
+			{#each Object.keys({ ...monthIn, ...monthOut }) as currency (currency)}
+				<div class="flex gap-2.5">
 					<div class="flex flex-1 flex-col gap-1 rounded-2xl border border-border bg-card p-3.5">
 						<div class="text-xs text-muted">In ({currency})</div>
 						<div class="font-display text-lg font-bold text-primary">
@@ -154,8 +156,8 @@
 						<div class="text-xs text-muted">Out ({currency})</div>
 						<div class="font-display text-lg font-bold">&minus;{formatMoney(monthOut[currency] ?? 0, currency)}</div>
 					</div>
-				{/each}
-			</div>
+				</div>
+			{/each}
 		</div>
 	{/if}
 </div>
