@@ -24,10 +24,10 @@ impl<S: LedgerStore> Ledger<S> {
         currency: Currency,
         kind: AccountKind,
         opening_balance: Decimal,
-    ) -> Account {
+    ) -> Result<Account, LedgerError> {
         let account = Account::new(name, currency, kind, opening_balance);
-        self.store.save_account(account.clone());
-        account
+        self.store.save_account(account.clone())?;
+        Ok(account)
     }
 
     pub fn record_manual_entry(
@@ -39,7 +39,7 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<Entry, LedgerError> {
         let account = self
             .store
-            .get_account(account_id)
+            .get_account(account_id)?
             .ok_or(LedgerError::AccountNotFound(account_id))?;
         let entry = Entry {
             id: Uuid::new_v4(),
@@ -59,18 +59,18 @@ impl<S: LedgerStore> Ledger<S> {
             confirmed: false,
             voided_reason: None,
         };
-        self.store.save_entry(entry.clone());
+        self.store.save_entry(entry.clone())?;
         Ok(entry)
     }
 
     pub fn account_balance(&self, account_id: Uuid) -> Result<Decimal, LedgerError> {
         let account = self
             .store
-            .get_account(account_id)
+            .get_account(account_id)?
             .ok_or(LedgerError::AccountNotFound(account_id))?;
         let posted: Decimal = self
             .store
-            .entries_for_account(account_id)
+            .entries_for_account(account_id)?
             .into_iter()
             .filter(|e| !e.is_voided() && e.bank_state != BankState::Reverted)
             .map(|e| e.amount)
@@ -78,15 +78,23 @@ impl<S: LedgerStore> Ledger<S> {
         Ok(account.opening_balance + posted)
     }
 
-    pub fn accounts(&self) -> Vec<Account> {
+    pub fn accounts(&self) -> Result<Vec<Account>, LedgerError> {
         self.store.all_accounts()
     }
 
-    pub fn pots(&self) -> Vec<Pot> {
+    pub fn account(&self, id: Uuid) -> Result<Option<Account>, LedgerError> {
+        self.store.get_account(id)
+    }
+
+    pub fn pots(&self) -> Result<Vec<Pot>, LedgerError> {
         self.store.all_pots()
     }
 
-    pub fn entries(&self, account_id: Uuid) -> Vec<Entry> {
+    pub fn pot(&self, id: Uuid) -> Result<Option<Pot>, LedgerError> {
+        self.store.get_pot(id)
+    }
+
+    pub fn entries(&self, account_id: Uuid) -> Result<Vec<Entry>, LedgerError> {
         self.store.entries_for_account(account_id)
     }
 
@@ -97,7 +105,7 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<Entry, LedgerError> {
         let mut entry = self
             .store
-            .get_entry(entry_id)
+            .get_entry(entry_id)?
             .ok_or(LedgerError::EntryNotFound(entry_id))?;
         if entry.is_voided() {
             return Err(LedgerError::AlreadyVoided);
@@ -116,7 +124,7 @@ impl<S: LedgerStore> Ledger<S> {
             }
         }
         entry.amount = new_amount;
-        self.store.save_entry(entry.clone());
+        self.store.save_entry(entry.clone())?;
         Ok(entry)
     }
 
@@ -139,7 +147,7 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<Entry, LedgerError> {
         let mut entry = self
             .store
-            .get_entry(entry_id)
+            .get_entry(entry_id)?
             .ok_or(LedgerError::EntryNotFound(entry_id))?;
         if entry.is_voided() {
             return Err(LedgerError::AlreadyVoided);
@@ -154,7 +162,7 @@ impl<S: LedgerStore> Ledger<S> {
             if let Some(new_pot) = pot_id {
                 let pot = self
                     .store
-                    .get_pot(new_pot)
+                    .get_pot(new_pot)?
                     .ok_or(LedgerError::PotNotFound(new_pot))?;
                 if entry.currency != pot.currency {
                     return Err(LedgerError::PotCurrencyMismatch);
@@ -169,27 +177,27 @@ impl<S: LedgerStore> Ledger<S> {
         entry.tags = tags;
         entry.note = note;
         entry.pot_id = pot_id;
-        self.store.save_entry(entry.clone());
+        self.store.save_entry(entry.clone())?;
         Ok(entry)
     }
 
     pub fn confirm_entry(&mut self, entry_id: Uuid) -> Result<Entry, LedgerError> {
         let mut entry = self
             .store
-            .get_entry(entry_id)
+            .get_entry(entry_id)?
             .ok_or(LedgerError::EntryNotFound(entry_id))?;
         if entry.is_voided() {
             return Err(LedgerError::AlreadyVoided);
         }
         entry.confirmed = true;
-        self.store.save_entry(entry.clone());
+        self.store.save_entry(entry.clone())?;
         Ok(entry)
     }
 
     pub fn void_entry(&mut self, entry_id: Uuid, reason: &str) -> Result<Entry, LedgerError> {
         let mut entry = self
             .store
-            .get_entry(entry_id)
+            .get_entry(entry_id)?
             .ok_or(LedgerError::EntryNotFound(entry_id))?;
         if entry.is_voided() {
             return Err(LedgerError::AlreadyVoided);
@@ -198,7 +206,7 @@ impl<S: LedgerStore> Ledger<S> {
             return Err(LedgerError::VoidReasonRequired);
         }
         entry.voided_reason = Some(reason.to_string());
-        self.store.save_entry(entry.clone());
+        self.store.save_entry(entry.clone())?;
         Ok(entry)
     }
 
@@ -209,7 +217,7 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<Vec<EntryPart>, LedgerError> {
         let entry = self
             .store
-            .get_entry(entry_id)
+            .get_entry(entry_id)?
             .ok_or(LedgerError::EntryNotFound(entry_id))?;
         let sum: Decimal = parts.iter().map(|(amount, _)| *amount).sum();
         if sum != entry.amount {
@@ -225,11 +233,11 @@ impl<S: LedgerStore> Ledger<S> {
                 transfer_account_id: None,
             })
             .collect();
-        self.store.save_entry_parts(entry_id, built.clone());
+        self.store.save_entry_parts(entry_id, built.clone())?;
         Ok(built)
     }
 
-    pub fn parts_for_entry(&self, entry_id: Uuid) -> Vec<EntryPart> {
+    pub fn parts_for_entry(&self, entry_id: Uuid) -> Result<Vec<EntryPart>, LedgerError> {
         self.store.parts_for_entry(entry_id)
     }
 
@@ -239,7 +247,7 @@ impl<S: LedgerStore> Ledger<S> {
         currency: Currency,
         target: Option<Decimal>,
         priority: Option<i32>,
-    ) -> Pot {
+    ) -> Result<Pot, LedgerError> {
         let pot = Pot {
             id: Uuid::new_v4(),
             name: name.to_string(),
@@ -247,22 +255,22 @@ impl<S: LedgerStore> Ledger<S> {
             target,
             priority,
         };
-        self.store.save_pot(pot.clone());
-        pot
+        self.store.save_pot(pot.clone())?;
+        Ok(pot)
     }
 
     pub fn pot_balance(&self, pot_id: Uuid) -> Result<Decimal, LedgerError> {
         self.store
-            .get_pot(pot_id)
+            .get_pot(pot_id)?
             .ok_or(LedgerError::PotNotFound(pot_id))?;
         let from_allocations: Decimal = self
             .store
-            .allocations_for_pot(pot_id)
+            .allocations_for_pot(pot_id)?
             .into_iter()
             .map(|a| a.amount)
             .sum();
         let from_tagged_entries: Decimal = self
-            .entries_tagged_to_pot(pot_id)
+            .entries_tagged_to_pot(pot_id)?
             .into_iter()
             .map(|e| e.amount)
             .sum();
@@ -273,44 +281,40 @@ impl<S: LedgerStore> Ledger<S> {
     /// (money-in) entry adds to the pot, a negative (expense) entry draws
     /// it down, matching the spec's pot balance rule directly since amounts
     /// are already signed.
-    fn entries_tagged_to_pot(&self, pot_id: Uuid) -> Vec<Entry> {
-        self.store
-            .all_accounts()
-            .into_iter()
-            .flat_map(|a| self.store.entries_for_account(a.id))
-            .filter(|e| e.pot_id == Some(pot_id) && !e.is_voided() && e.bank_state != BankState::Reverted)
-            .collect()
+    fn entries_tagged_to_pot(&self, pot_id: Uuid) -> Result<Vec<Entry>, LedgerError> {
+        let mut tagged = Vec::new();
+        for account in self.store.all_accounts()? {
+            for entry in self.store.entries_for_account(account.id)? {
+                if entry.pot_id == Some(pot_id) && !entry.is_voided() && entry.bank_state != BankState::Reverted {
+                    tagged.push(entry);
+                }
+            }
+        }
+        Ok(tagged)
     }
 
-    fn own_accounts_total(&self, currency: &Currency) -> Decimal {
-        self.store
-            .all_accounts()
-            .into_iter()
-            .filter(|a| a.kind == AccountKind::Own && &a.currency == currency)
-            // account_balance only fails on an unknown account id, and every
-            // id here came from all_accounts() on this same store, so it
-            // cannot fail. Falling back to zero rather than propagating a
-            // Result keeps this and pots_total simple call sites for
-            // general_savings, which the rest of the crate treats as
-            // infallible.
-            .map(|a| self.account_balance(a.id).unwrap_or(Decimal::ZERO))
-            .sum()
+    fn own_accounts_total(&self, currency: &Currency) -> Result<Decimal, LedgerError> {
+        let mut total = Decimal::ZERO;
+        for account in self.store.all_accounts()? {
+            if account.kind == AccountKind::Own && &account.currency == currency {
+                total += self.account_balance(account.id)?;
+            }
+        }
+        Ok(total)
     }
 
-    fn pots_total(&self, currency: &Currency) -> Decimal {
-        self.store
-            .all_pots()
-            .into_iter()
-            .filter(|p| &p.currency == currency)
-            // Same reasoning as own_accounts_total: pot_balance only fails
-            // on an unknown pot id, and every id here came from all_pots()
-            // on this same store.
-            .map(|p| self.pot_balance(p.id).unwrap_or(Decimal::ZERO))
-            .sum()
+    fn pots_total(&self, currency: &Currency) -> Result<Decimal, LedgerError> {
+        let mut total = Decimal::ZERO;
+        for pot in self.store.all_pots()? {
+            if &pot.currency == currency {
+                total += self.pot_balance(pot.id)?;
+            }
+        }
+        Ok(total)
     }
 
-    pub fn general_savings(&self, currency: &Currency) -> Decimal {
-        self.own_accounts_total(currency) - self.pots_total(currency)
+    pub fn general_savings(&self, currency: &Currency) -> Result<Decimal, LedgerError> {
+        Ok(self.own_accounts_total(currency)? - self.pots_total(currency)?)
     }
 
     pub fn allocate_to_pot(
@@ -321,10 +325,10 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<Allocation, LedgerError> {
         let pot = self
             .store
-            .get_pot(pot_id)
+            .get_pot(pot_id)?
             .ok_or(LedgerError::PotNotFound(pot_id))?;
         if amount > Decimal::ZERO {
-            let savings_after = self.general_savings(&pot.currency) - amount;
+            let savings_after = self.general_savings(&pot.currency)? - amount;
             if savings_after < Decimal::ZERO {
                 return Err(LedgerError::GeneralSavingsWouldGoNegative(pot.currency));
             }
@@ -341,7 +345,7 @@ impl<S: LedgerStore> Ledger<S> {
             date,
             note: None,
         };
-        self.store.save_allocation(allocation.clone());
+        self.store.save_allocation(allocation.clone())?;
         Ok(allocation)
     }
 
@@ -357,11 +361,11 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<(Entry, Entry), LedgerError> {
         let from = self
             .store
-            .get_account(from_account)
+            .get_account(from_account)?
             .ok_or(LedgerError::AccountNotFound(from_account))?;
         let to = self
             .store
-            .get_account(to_account)
+            .get_account(to_account)?
             .ok_or(LedgerError::AccountNotFound(to_account))?;
         if from.currency != to.currency && amount_received == amount_sent {
             return Err(LedgerError::CrossCurrencyAmountRequired);
@@ -405,15 +409,15 @@ impl<S: LedgerStore> Ledger<S> {
             confirmed: false,
             voided_reason: None,
         };
-        self.store.save_entry(out_entry.clone());
-        self.store.save_entry(in_entry.clone());
+        self.store.save_entry(out_entry.clone())?;
+        self.store.save_entry(in_entry.clone())?;
         Ok((out_entry, in_entry))
     }
 
     pub fn current_value(&self, account_id: Uuid) -> Result<Decimal, LedgerError> {
         let account = self
             .store
-            .get_account(account_id)
+            .get_account(account_id)?
             .ok_or(LedgerError::AccountNotFound(account_id))?;
         match account.current_value {
             Some(v) => Ok(v),
@@ -430,7 +434,7 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<Valuation, LedgerError> {
         let mut account = self
             .store
-            .get_account(account_id)
+            .get_account(account_id)?
             .ok_or(LedgerError::AccountNotFound(account_id))?;
         let old_value = self.current_value(account_id)?;
         let valuation = Valuation {
@@ -442,8 +446,8 @@ impl<S: LedgerStore> Ledger<S> {
             category: category.to_string(),
         };
         account.current_value = Some(new_value);
-        self.store.save_account(account);
-        self.store.save_valuation(valuation.clone());
+        self.store.save_account(account)?;
+        self.store.save_valuation(valuation.clone())?;
         Ok(valuation)
     }
 }
@@ -462,7 +466,7 @@ mod tests {
     fn a_new_account_with_an_opening_balance_and_no_entries_has_that_balance() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(100));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(100)).unwrap();
         assert_eq!(ledger.account_balance(account.id), Ok(dec!(100)));
     }
 
@@ -470,7 +474,7 @@ mod tests {
     fn a_manual_entry_changes_the_balance() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(100));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(100)).unwrap();
         ledger
             .record_manual_entry(account.id, a_date(), dec!(-20), "Groceries")
             .unwrap();
@@ -481,7 +485,7 @@ mod tests {
     fn several_entries_all_count_toward_the_balance() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         ledger
             .record_manual_entry(account.id, a_date(), dec!(500), "Pay")
             .unwrap();
@@ -514,7 +518,7 @@ mod tests {
     fn a_manual_unconfirmed_entry_amount_can_be_edited() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-4.5), "Bread")
             .unwrap();
@@ -529,7 +533,7 @@ mod tests {
     fn a_confirmed_entry_cannot_be_edited() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-4.5), "Bread")
             .unwrap();
@@ -542,7 +546,7 @@ mod tests {
     fn voiding_an_entry_excludes_it_from_the_balance() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(100));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(100)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-20), "Mistake")
             .unwrap();
@@ -554,7 +558,7 @@ mod tests {
     fn voiding_needs_a_reason() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-20), "x")
             .unwrap();
@@ -568,7 +572,7 @@ mod tests {
     fn a_voided_entry_cannot_be_edited() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-20), "x")
             .unwrap();
@@ -583,7 +587,7 @@ mod tests {
     fn a_voided_entry_cannot_be_confirmed() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-20), "x")
             .unwrap();
@@ -598,7 +602,7 @@ mod tests {
     fn voiding_twice_is_an_error() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-20), "x")
             .unwrap();
@@ -613,7 +617,7 @@ mod tests {
     fn splitting_an_entry_into_matching_parts_succeeds() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-425), "Mixed payment")
             .unwrap();
@@ -627,27 +631,27 @@ mod tests {
             )
             .unwrap();
         assert_eq!(parts.len(), 2);
-        assert_eq!(ledger.parts_for_entry(entry.id).len(), 2);
+        assert_eq!(ledger.parts_for_entry(entry.id).unwrap().len(), 2);
     }
 
     #[test]
     fn splitting_an_entry_into_parts_that_do_not_sum_correctly_is_refused() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(account.id, a_date(), dec!(-425), "Mixed payment")
             .unwrap();
         let result = ledger.split_entry(entry.id, vec![(dec!(-300), None), (dec!(-100), None)]);
         assert_eq!(result, Err(LedgerError::PartsDoNotSumToAmount));
-        assert!(ledger.parts_for_entry(entry.id).is_empty());
+        assert!(ledger.parts_for_entry(entry.id).unwrap().is_empty());
     }
 
     #[test]
     fn a_new_pot_starts_at_zero() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let pot = ledger.open_pot("Emergency fund", eur, Some(dec!(2000)), Some(1));
+        let pot = ledger.open_pot("Emergency fund", eur, Some(dec!(2000)), Some(1)).unwrap();
         assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(0)));
     }
 
@@ -655,19 +659,19 @@ mod tests {
     fn allocating_up_to_exactly_general_savings_succeeds() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100));
-        let pot = ledger.open_pot("Emergency fund", eur.clone(), None, None);
+        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let pot = ledger.open_pot("Emergency fund", eur.clone(), None, None).unwrap();
         ledger.allocate_to_pot(pot.id, dec!(100), a_date()).unwrap();
         assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(100)));
-        assert_eq!(ledger.general_savings(&eur), dec!(0));
+        assert_eq!(ledger.general_savings(&eur), Ok(dec!(0)));
     }
 
     #[test]
     fn allocating_one_cent_more_than_general_savings_is_refused() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100));
-        let pot = ledger.open_pot("Emergency fund", eur.clone(), None, None);
+        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let pot = ledger.open_pot("Emergency fund", eur.clone(), None, None).unwrap();
         let result = ledger.allocate_to_pot(pot.id, dec!(100.01), a_date());
         assert_eq!(result, Err(LedgerError::GeneralSavingsWouldGoNegative(eur)));
         assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(0)));
@@ -677,8 +681,8 @@ mod tests {
     fn unallocating_more_than_a_pot_holds_is_refused() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100));
-        let pot = ledger.open_pot("Emergency fund", eur, None, None);
+        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let pot = ledger.open_pot("Emergency fund", eur, None, None).unwrap();
         ledger.allocate_to_pot(pot.id, dec!(50), a_date()).unwrap();
         let result = ledger.allocate_to_pot(pot.id, dec!(-60), a_date());
         assert_eq!(result, Err(LedgerError::PotWouldGoNegative));
@@ -688,31 +692,31 @@ mod tests {
     fn unallocating_moves_money_back_to_general_savings() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100));
-        let pot = ledger.open_pot("Emergency fund", eur.clone(), None, None);
+        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let pot = ledger.open_pot("Emergency fund", eur.clone(), None, None).unwrap();
         ledger.allocate_to_pot(pot.id, dec!(100), a_date()).unwrap();
         ledger.allocate_to_pot(pot.id, dec!(-40), a_date()).unwrap();
         assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(60)));
-        assert_eq!(ledger.general_savings(&eur), dec!(40));
+        assert_eq!(ledger.general_savings(&eur), Ok(dec!(40)));
     }
 
     #[test]
     fn general_savings_only_counts_own_accounts_not_outside_or_person_accounts() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100));
-        ledger.open_account("A friend", eur.clone(), AccountKind::Person, dec!(500));
-        assert_eq!(ledger.general_savings(&eur), dec!(100));
+        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        ledger.open_account("A friend", eur.clone(), AccountKind::Person, dec!(500)).unwrap();
+        assert_eq!(ledger.general_savings(&eur), Ok(dec!(100)));
     }
 
     #[test]
     fn tagging_an_expense_to_a_pot_draws_the_pot_down_and_leaves_general_savings_alone() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
-        let pot = ledger.open_pot("Camera", eur.clone(), None, None);
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000)).unwrap();
+        let pot = ledger.open_pot("Camera", eur.clone(), None, None).unwrap();
         ledger.allocate_to_pot(pot.id, dec!(900), a_date()).unwrap();
-        assert_eq!(ledger.general_savings(&eur), dec!(100));
+        assert_eq!(ledger.general_savings(&eur), Ok(dec!(100)));
 
         let purchase = ledger
             .record_manual_entry(checking.id, a_date(), dec!(-900), "Camera shop")
@@ -722,15 +726,15 @@ mod tests {
             .unwrap();
 
         assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(0)));
-        assert_eq!(ledger.general_savings(&eur), dec!(100));
+        assert_eq!(ledger.general_savings(&eur), Ok(dec!(100)));
     }
 
     #[test]
     fn tagging_an_expense_that_would_push_the_pot_negative_is_refused() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
-        let pot = ledger.open_pot("Camera", eur, None, None);
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000)).unwrap();
+        let pot = ledger.open_pot("Camera", eur, None, None).unwrap();
         ledger.allocate_to_pot(pot.id, dec!(500), a_date()).unwrap();
         let purchase = ledger
             .record_manual_entry(checking.id, a_date(), dec!(-900), "Camera shop")
@@ -744,8 +748,8 @@ mod tests {
     fn moving_a_tag_off_a_pot_that_would_go_negative_without_it_is_refused() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
-        let pot = ledger.open_pot("Camera", eur, None, None);
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000)).unwrap();
+        let pot = ledger.open_pot("Camera", eur, None, None).unwrap();
         let income = ledger
             .record_manual_entry(checking.id, a_date(), dec!(50), "Sold something")
             .unwrap();
@@ -770,7 +774,7 @@ mod tests {
     fn category_tags_and_note_can_be_changed_on_a_locked_imported_entry() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let checking = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(checking.id, a_date(), dec!(-20), "Wolt")
             .unwrap();
@@ -798,7 +802,7 @@ mod tests {
     fn a_voided_entry_cannot_have_its_metadata_changed() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let checking = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         let entry = ledger
             .record_manual_entry(checking.id, a_date(), dec!(-20), "x")
             .unwrap();
@@ -812,8 +816,8 @@ mod tests {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
         let usd = Currency::new("USD").unwrap();
-        let card = ledger.open_account("Card", usd, AccountKind::Own, dec!(0));
-        let pot = ledger.open_pot("Camera", eur, None, None);
+        let card = ledger.open_account("Card", usd, AccountKind::Own, dec!(0)).unwrap();
+        let pot = ledger.open_pot("Camera", eur, None, None).unwrap();
         let entry = ledger
             .record_manual_entry(card.id, a_date(), dec!(-50), "x")
             .unwrap();
@@ -826,8 +830,8 @@ mod tests {
     fn editing_the_amount_of_a_pot_tagged_entry_that_would_push_the_pot_negative_is_refused() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
-        let pot = ledger.open_pot("Camera", eur, None, None);
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000)).unwrap();
+        let pot = ledger.open_pot("Camera", eur, None, None).unwrap();
         ledger.allocate_to_pot(pot.id, dec!(500), a_date()).unwrap();
         let entry = ledger
             .record_manual_entry(checking.id, a_date(), dec!(-100), "Lens")
@@ -846,8 +850,8 @@ mod tests {
     fn editing_the_amount_of_a_pot_tagged_entry_within_the_pots_means_succeeds() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
-        let pot = ledger.open_pot("Camera", eur, None, None);
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000)).unwrap();
+        let pot = ledger.open_pot("Camera", eur, None, None).unwrap();
         ledger.allocate_to_pot(pot.id, dec!(500), a_date()).unwrap();
         let entry = ledger
             .record_manual_entry(checking.id, a_date(), dec!(-100), "Lens")
@@ -863,36 +867,54 @@ mod tests {
     fn accounts_lists_every_open_account() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(0));
-        ledger.open_account("B", eur, AccountKind::Own, dec!(0));
-        assert_eq!(ledger.accounts().len(), 2);
+        ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(0)).unwrap();
+        ledger.open_account("B", eur, AccountKind::Own, dec!(0)).unwrap();
+        assert_eq!(ledger.accounts().unwrap().len(), 2);
     }
 
     #[test]
     fn pots_lists_every_open_pot() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        ledger.open_pot("A", eur.clone(), None, None);
-        ledger.open_pot("B", eur, None, None);
-        assert_eq!(ledger.pots().len(), 2);
+        ledger.open_pot("A", eur.clone(), None, None).unwrap();
+        ledger.open_pot("B", eur, None, None).unwrap();
+        assert_eq!(ledger.pots().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn account_finds_a_saved_account_by_id_and_none_for_an_unknown_one() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let a = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
+        assert_eq!(ledger.account(a.id), Ok(Some(a)));
+        assert_eq!(ledger.account(Uuid::new_v4()), Ok(None));
+    }
+
+    #[test]
+    fn pot_finds_a_saved_pot_by_id_and_none_for_an_unknown_one() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let p = ledger.open_pot("Camera", eur, None, None).unwrap();
+        assert_eq!(ledger.pot(p.id), Ok(Some(p)));
+        assert_eq!(ledger.pot(Uuid::new_v4()), Ok(None));
     }
 
     #[test]
     fn entries_lists_every_entry_for_an_account() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
         ledger.record_manual_entry(account.id, a_date(), dec!(-10), "x").unwrap();
         ledger.record_manual_entry(account.id, a_date(), dec!(-5), "y").unwrap();
-        assert_eq!(ledger.entries(account.id).len(), 2);
+        assert_eq!(ledger.entries(account.id).unwrap().len(), 2);
     }
 
     #[test]
     fn a_same_currency_transfer_moves_the_same_amount_both_ways() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let a = ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(100));
-        let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0));
+        let a = ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0)).unwrap();
         ledger
             .transfer(a.id, b.id, a_date(), dec!(40), dec!(40), "move")
             .unwrap();
@@ -904,8 +926,8 @@ mod tests {
     fn a_same_currency_transfer_with_mismatched_amounts_is_refused() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let a = ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(100));
-        let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0));
+        let a = ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0)).unwrap();
         let result = ledger.transfer(a.id, b.id, a_date(), dec!(40), dec!(35), "move");
         assert_eq!(result, Err(LedgerError::CrossCurrencyAmountRequired));
     }
@@ -915,8 +937,8 @@ mod tests {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
         let ngn = Currency::new("NGN").unwrap();
-        let a = ledger.open_account("A", eur, AccountKind::Own, dec!(200));
-        let b = ledger.open_account("B", ngn, AccountKind::Own, dec!(0));
+        let a = ledger.open_account("A", eur, AccountKind::Own, dec!(200)).unwrap();
+        let b = ledger.open_account("B", ngn, AccountKind::Own, dec!(0)).unwrap();
         ledger
             .transfer(a.id, b.id, a_date(), dec!(200), dec!(370000), "move")
             .unwrap();
@@ -929,8 +951,8 @@ mod tests {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
         let ngn = Currency::new("NGN").unwrap();
-        let a = ledger.open_account("A", eur, AccountKind::Own, dec!(200));
-        let b = ledger.open_account("B", ngn, AccountKind::Own, dec!(0));
+        let a = ledger.open_account("A", eur, AccountKind::Own, dec!(200)).unwrap();
+        let b = ledger.open_account("B", ngn, AccountKind::Own, dec!(0)).unwrap();
         let result = ledger.transfer(a.id, b.id, a_date(), dec!(200), dec!(200), "move");
         assert_eq!(result, Err(LedgerError::CrossCurrencyAmountRequired));
         assert_eq!(ledger.account_balance(a.id), Ok(dec!(200)));
@@ -941,8 +963,8 @@ mod tests {
     fn voiding_one_side_of_a_transfer_leaves_the_other_side_untouched() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let a = ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(100));
-        let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0));
+        let a = ledger.open_account("A", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
+        let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0)).unwrap();
         let (out_entry, in_entry) = ledger
             .transfer(a.id, b.id, a_date(), dec!(40), dec!(40), "move")
             .unwrap();
@@ -951,15 +973,15 @@ mod tests {
             .unwrap();
         assert_eq!(ledger.account_balance(a.id), Ok(dec!(100)));
         assert_eq!(ledger.account_balance(b.id), Ok(dec!(40)));
-        assert!(!ledger.store.get_entry(in_entry.id).unwrap().is_voided());
+        assert!(!ledger.store.get_entry(in_entry.id).unwrap().unwrap().is_voided());
     }
 
     #[test]
     fn lending_money_is_a_transfer_to_a_person_account_and_can_make_it_negative() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(500));
-        let friend = ledger.open_account("A friend", eur, AccountKind::Person, dec!(0));
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(500)).unwrap();
+        let friend = ledger.open_account("A friend", eur, AccountKind::Person, dec!(0)).unwrap();
         ledger
             .transfer(checking.id, friend.id, a_date(), dec!(100), dec!(100), "loan")
             .unwrap();
@@ -974,8 +996,8 @@ mod tests {
     fn an_own_account_can_go_negative() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(50));
-        let other = ledger.open_account("Other", eur, AccountKind::Own, dec!(0));
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(50)).unwrap();
+        let other = ledger.open_account("Other", eur, AccountKind::Own, dec!(0)).unwrap();
         ledger
             .transfer(checking.id, other.id, a_date(), dec!(80), dec!(80), "overdraw")
             .unwrap();
@@ -986,7 +1008,7 @@ mod tests {
     fn an_investment_created_with_an_opening_value_and_no_transaction_has_that_value() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let etf = ledger.open_account("An ETF position", eur, AccountKind::Investment, dec!(1000));
+        let etf = ledger.open_account("An ETF position", eur, AccountKind::Investment, dec!(1000)).unwrap();
         assert_eq!(ledger.current_value(etf.id), Ok(dec!(1000)));
     }
 
@@ -994,7 +1016,7 @@ mod tests {
     fn updating_the_current_value_records_a_valuation_and_changes_current_value() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let etf = ledger.open_account("An ETF position", eur, AccountKind::Investment, dec!(1000));
+        let etf = ledger.open_account("An ETF position", eur, AccountKind::Investment, dec!(1000)).unwrap();
         let valuation = ledger
             .update_current_value(etf.id, dec!(1042), "Investment gain", a_date())
             .unwrap();
@@ -1008,8 +1030,8 @@ mod tests {
     fn a_person_account_current_value_above_cash_lent_is_recorded_as_interest() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(500));
-        let friend = ledger.open_account("A friend", eur, AccountKind::Person, dec!(0));
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(500)).unwrap();
+        let friend = ledger.open_account("A friend", eur, AccountKind::Person, dec!(0)).unwrap();
         ledger
             .transfer(checking.id, friend.id, a_date(), dec!(100), dec!(100), "loan")
             .unwrap();
@@ -1024,7 +1046,7 @@ mod tests {
     fn updating_the_current_value_twice_measures_the_gain_from_the_last_update() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let eur = Currency::new("EUR").unwrap();
-        let etf = ledger.open_account("An ETF position", eur, AccountKind::Investment, dec!(1000));
+        let etf = ledger.open_account("An ETF position", eur, AccountKind::Investment, dec!(1000)).unwrap();
         ledger
             .update_current_value(etf.id, dec!(1100), "Investment gain", a_date())
             .unwrap();

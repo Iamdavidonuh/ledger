@@ -4,7 +4,7 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
-use ledger_core::{Currency, Pot};
+use ledger_core::{Currency, LedgerError, Pot};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -38,28 +38,34 @@ pub fn router() -> Router<AppState> {
 
 async fn open_pot(State(state): State<AppState>, Json(req): Json<OpenPotRequest>) -> Result<Json<Pot>, AppError> {
     let currency = Currency::new(&req.currency).map_err(|e| AppError::bad_request(e.to_string()))?;
-    let mut ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
-    let pot = ledger.open_pot(&req.name, currency, req.target, req.priority);
+    let mut ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let pot = ledger.open_pot(&req.name, currency, req.target, req.priority)?;
     Ok(Json(pot))
 }
 
-async fn list_pots(State(state): State<AppState>) -> Json<Vec<PotWithBalance>> {
-    let ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
-    let with_balances = ledger
-        .pots()
-        .into_iter()
-        .map(|pot| {
-            let balance = ledger.pot_balance(pot.id).expect("an id from pots() always exists");
-            PotWithBalance { pot, balance }
-        })
-        .collect();
-    Json(with_balances)
+async fn list_pots(State(state): State<AppState>) -> Result<Json<Vec<PotWithBalance>>, AppError> {
+    let ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let mut with_balances = Vec::new();
+    for pot in ledger.pots()? {
+        let balance = ledger.pot_balance(pot.id)?;
+        with_balances.push(PotWithBalance { pot, balance });
+    }
+    Ok(Json(with_balances))
 }
 
 async fn get_pot(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<PotWithBalance>, AppError> {
-    let ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
+    let ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
     let balance = ledger.pot_balance(id)?;
-    let pot = ledger.pots().into_iter().find(|p| p.id == id).expect("pot_balance succeeded, so this id exists");
     Ok(Json(PotWithBalance { pot, balance }))
 }
 
@@ -68,9 +74,12 @@ async fn allocate(
     Path(id): Path<Uuid>,
     Json(req): Json<AllocateRequest>,
 ) -> Result<Json<PotWithBalance>, AppError> {
-    let mut ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
+    let mut ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
     ledger.allocate_to_pot(id, req.amount, req.date)?;
+    let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
     let balance = ledger.pot_balance(id)?;
-    let pot = ledger.pots().into_iter().find(|p| p.id == id).expect("allocate_to_pot succeeded, so this id exists");
     Ok(Json(PotWithBalance { pot, balance }))
 }

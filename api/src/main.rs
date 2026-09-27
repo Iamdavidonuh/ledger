@@ -1,13 +1,4 @@
-// Every handler locks the shared Ledger mutex with `.expect("...poisoned")`,
-// the standard idiom for a poisoned mutex (only reachable if another thread
-// panicked while holding the lock), and a few handlers use `.expect(...)`
-// for "this id was just confirmed to exist by an earlier call in the same
-// handler" invariants. Both document a real invariant rather than hiding a
-// normal failure, the same reasoning ledger-core's sqlite_store.rs uses,
-// just spread across this whole crate instead of one file, since the
-// mutex-lock pattern is inherent to every handler here.
-#![allow(clippy::expect_used, clippy::panic)]
-#![cfg_attr(test, allow(clippy::unwrap_used))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod accounts;
 mod entries;
@@ -38,14 +29,13 @@ pub fn app(state: AppState) -> Router {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_path = std::env::var("LEDGER_DB_PATH").unwrap_or_else(|_| "ledger.sqlite3".to_string());
-    let store = SqliteStore::open(&PathBuf::from(db_path)).expect("opening the database should not fail");
+    let store = SqliteStore::open(&PathBuf::from(db_path))?;
     let state = AppState::new(store);
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080")
-        .await
-        .expect("binding the port should not fail");
-    axum::serve(listener, app(state)).await.expect("serving should not fail");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
+    axum::serve(listener, app(state)).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -82,6 +72,7 @@ mod tests {
                 ledger_core::AccountKind::Own,
                 rust_decimal_macros::dec!(1000),
             )
+            .unwrap()
             .id;
         let b = state
             .ledger
@@ -93,6 +84,7 @@ mod tests {
                 ledger_core::AccountKind::Own,
                 rust_decimal_macros::dec!(0),
             )
+            .unwrap()
             .id;
 
         let response = app(state.clone())
@@ -116,6 +108,7 @@ mod tests {
             .lock()
             .unwrap()
             .open_pot("Emergency fund", ledger_core::Currency::new("EUR").unwrap(), None, None)
+            .unwrap()
             .id;
 
         let response = app(state.clone())

@@ -25,4 +25,6 @@ pub enum LedgerError {
     CrossCurrencyAmountRequired,
     #[error("an entry can only be tagged to a pot in the same currency")]
     PotCurrencyMismatch,
+    #[error("storage error: {0}")]
+    Storage(String),
 }

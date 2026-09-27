@@ -3,7 +3,7 @@ use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use ledger_core::{Account, AccountKind, Currency};
+use ledger_core::{Account, AccountKind, Currency, LedgerError};
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -33,37 +33,37 @@ async fn create_account(
     Json(req): Json<CreateAccountRequest>,
 ) -> Result<Json<Account>, AppError> {
     let currency = Currency::new(&req.currency).map_err(|e| AppError::bad_request(e.to_string()))?;
-    let mut ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
-    let account = ledger.open_account(&req.name, currency, req.kind, req.opening_balance);
+    let mut ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let account = ledger.open_account(&req.name, currency, req.kind, req.opening_balance)?;
     Ok(Json(account))
 }
 
-async fn list_accounts(State(state): State<AppState>) -> Json<Vec<AccountWithBalance>> {
-    let ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
-    let with_balances = ledger
-        .accounts()
-        .into_iter()
-        .map(|account| {
-            let balance = ledger
-                .account_balance(account.id)
-                .expect("an id from accounts() always exists");
-            AccountWithBalance { account, balance }
-        })
-        .collect();
-    Json(with_balances)
+async fn list_accounts(State(state): State<AppState>) -> Result<Json<Vec<AccountWithBalance>>, AppError> {
+    let ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let mut with_balances = Vec::new();
+    for account in ledger.accounts()? {
+        let balance = ledger.account_balance(account.id)?;
+        with_balances.push(AccountWithBalance { account, balance });
+    }
+    Ok(Json(with_balances))
 }
 
 async fn get_account(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountWithBalance>, AppError> {
-    let ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
+    let ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    let account = ledger.account(id)?.ok_or(LedgerError::AccountNotFound(id))?;
     let balance = ledger.account_balance(id)?;
-    let account = ledger
-        .accounts()
-        .into_iter()
-        .find(|a| a.id == id)
-        .expect("account_balance succeeded, so this id exists");
     Ok(Json(AccountWithBalance { account, balance }))
 }
 
@@ -125,12 +125,12 @@ mod tests {
     #[tokio::test]
     async fn listing_accounts_includes_the_balance() {
         let state = test_state();
-        state.ledger.lock().unwrap().open_account(
-            "Checking",
-            Currency::new("EUR").unwrap(),
-            AccountKind::Own,
-            rust_decimal_macros::dec!(50),
-        );
+        state
+            .ledger
+            .lock()
+            .unwrap()
+            .open_account("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, rust_decimal_macros::dec!(50))
+            .unwrap();
         let response = app(state)
             .oneshot(Request::builder().uri("/accounts").body(Body::empty()).unwrap())
             .await

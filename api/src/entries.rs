@@ -76,14 +76,23 @@ async fn record_entry(
             "amount must be zero or positive; use kind to say expense or income",
         ));
     }
-    let mut ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
+    let mut ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
     let entry = ledger.record_manual_entry(req.account_id, req.date, req.kind.signed(req.amount), &req.description)?;
     Ok(Json(entry))
 }
 
-async fn list_entries(State(state): State<AppState>, Query(q): Query<AccountIdQuery>) -> Json<Vec<Entry>> {
-    let ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
-    Json(ledger.entries(q.account_id))
+async fn list_entries(
+    State(state): State<AppState>,
+    Query(q): Query<AccountIdQuery>,
+) -> Result<Json<Vec<Entry>>, AppError> {
+    let ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+    Ok(Json(ledger.entries(q.account_id)?))
 }
 
 async fn update_metadata(
@@ -91,7 +100,10 @@ async fn update_metadata(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateEntryMetadataRequest>,
 ) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
+    let mut ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
     let entry = ledger.update_entry_metadata(id, req.category, req.tags, req.note, req.pot_id)?;
     Ok(Json(entry))
 }
@@ -106,7 +118,10 @@ async fn edit_amount(
             "amount must be zero or positive; use kind to say expense or income",
         ));
     }
-    let mut ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
+    let mut ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
     let entry = ledger.edit_manual_entry_amount(id, req.kind.signed(req.amount))?;
     Ok(Json(entry))
 }
@@ -116,13 +131,19 @@ async fn void_entry(
     Path(id): Path<Uuid>,
     Json(req): Json<VoidRequest>,
 ) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
+    let mut ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
     let entry = ledger.void_entry(id, &req.reason)?;
     Ok(Json(entry))
 }
 
 async fn confirm_entry(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Entry>, AppError> {
-    let mut ledger = state.ledger.lock().expect("the ledger mutex should not be poisoned");
+    let mut ledger = state
+        .ledger
+        .lock()
+        .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
     let entry = ledger.confirm_entry(id)?;
     Ok(Json(entry))
 }
@@ -147,6 +168,7 @@ mod tests {
             .lock()
             .unwrap()
             .open_account("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, rust_decimal_macros::dec!(0))
+            .unwrap()
             .id
     }
 
@@ -269,5 +291,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn metadata_can_be_set_then_cleared_back_to_none() {
+        let state = test_state();
+        let account_id = an_account(&state);
+        let response = post_json(
+            state.clone(),
+            "/entries",
+            serde_json::json!({"account_id": account_id, "date": "2026-01-15", "kind": "expense", "amount": "20", "description": "x"}),
+        )
+        .await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: Entry = serde_json::from_slice(&body).unwrap();
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/entries/{}", entry.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"category": "Groceries", "tags": ["a"], "note": "n"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let set: Entry = serde_json::from_slice(&body).unwrap();
+        assert_eq!(set.category, Some("Groceries".to_string()));
+        assert_eq!(set.tags, vec!["a".to_string()]);
+        assert_eq!(set.note, Some("n".to_string()));
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/entries/{}", entry.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"category": null, "tags": [], "note": null, "pot_id": null}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let cleared: Entry = serde_json::from_slice(&body).unwrap();
+        assert_eq!(cleared.category, None);
+        assert!(cleared.tags.is_empty());
+        assert_eq!(cleared.note, None);
+        assert_eq!(cleared.pot_id, None);
     }
 }
