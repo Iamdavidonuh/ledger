@@ -6,6 +6,7 @@ pub mod entry;
 pub mod error;
 pub mod ledger;
 pub mod pot;
+pub mod sqlite_store;
 pub mod store;
 pub mod valuation;
 
@@ -15,5 +16,6 @@ pub use entry::{BankState, Entry, EntryPart, EntrySource};
 pub use error::LedgerError;
 pub use ledger::Ledger;
 pub use pot::{Allocation, Pot};
+pub use sqlite_store::{SqliteStore, SqliteStoreError};
 pub use store::{InMemoryStore, LedgerStore};
 pub use valuation::Valuation;

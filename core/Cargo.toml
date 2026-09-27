@@ -9,9 +9,12 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite_migration = "1"
 
 [dev-dependencies]
 rust_decimal_macros = "1"
+tempfile = "3"
 
 [lints.clippy]
 unwrap_used = "warn"
