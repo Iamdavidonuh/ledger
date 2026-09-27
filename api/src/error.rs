@@ -41,6 +41,7 @@ impl IntoResponse for AppError {
             AppError::Ledger(
                 e @ (LedgerError::AccountNotFound(_) | LedgerError::EntryNotFound(_) | LedgerError::PotNotFound(_)),
             ) => (StatusCode::NOT_FOUND, e.to_string()),
+            AppError::Ledger(e @ LedgerError::Storage(_)) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Ledger(e) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
         };
         (status, Json(json!({ "error": message }))).into_response()
