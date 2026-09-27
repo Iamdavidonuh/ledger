@@ -98,6 +98,53 @@ impl<S: LedgerStore> Ledger<S> {
         Ok(entry)
     }
 
+    /// Category, tags, note and pot are always editable, even on an
+    /// imported or confirmed entry: only amount, date, time and account are
+    /// locked. Voided entries stay untouched entirely, the same as the
+    /// other entry-changing methods. Moving a tag onto or off a pot is
+    /// checked against that pot's never-below-zero floor the same way an
+    /// allocation is, since a tagged expense draws a pot down exactly like
+    /// an allocation would.
+    pub fn update_entry_metadata(
+        &mut self,
+        entry_id: Uuid,
+        category: Option<String>,
+        tags: Vec<String>,
+        note: Option<String>,
+        pot_id: Option<Uuid>,
+    ) -> Result<Entry, LedgerError> {
+        let mut entry = self
+            .store
+            .get_entry(entry_id)
+            .ok_or(LedgerError::EntryNotFound(entry_id))?;
+        if entry.is_voided() {
+            return Err(LedgerError::AlreadyVoided);
+        }
+        if pot_id != entry.pot_id {
+            if let Some(old_pot) = entry.pot_id {
+                let would_be = self.pot_balance(old_pot)? - entry.amount;
+                if would_be < Decimal::ZERO {
+                    return Err(LedgerError::PotWouldGoNegative);
+                }
+            }
+            if let Some(new_pot) = pot_id {
+                self.store
+                    .get_pot(new_pot)
+                    .ok_or(LedgerError::PotNotFound(new_pot))?;
+                let would_be = self.pot_balance(new_pot)? + entry.amount;
+                if would_be < Decimal::ZERO {
+                    return Err(LedgerError::PotWouldGoNegative);
+                }
+            }
+        }
+        entry.category = category;
+        entry.tags = tags;
+        entry.note = note;
+        entry.pot_id = pot_id;
+        self.store.save_entry(entry.clone());
+        Ok(entry)
+    }
+
     pub fn confirm_entry(&mut self, entry_id: Uuid) -> Result<Entry, LedgerError> {
         let mut entry = self
             .store
@@ -180,12 +227,31 @@ impl<S: LedgerStore> Ledger<S> {
         self.store
             .get_pot(pot_id)
             .ok_or(LedgerError::PotNotFound(pot_id))?;
-        Ok(self
+        let from_allocations: Decimal = self
             .store
             .allocations_for_pot(pot_id)
             .into_iter()
             .map(|a| a.amount)
-            .sum())
+            .sum();
+        let from_tagged_entries: Decimal = self
+            .entries_tagged_to_pot(pot_id)
+            .into_iter()
+            .map(|e| e.amount)
+            .sum();
+        Ok(from_allocations + from_tagged_entries)
+    }
+
+    /// Every entry, across every account, tagged to this pot. A positive
+    /// (money-in) entry adds to the pot, a negative (expense) entry draws
+    /// it down, matching the spec's pot balance rule directly since amounts
+    /// are already signed.
+    fn entries_tagged_to_pot(&self, pot_id: Uuid) -> Vec<Entry> {
+        self.store
+            .all_accounts()
+            .into_iter()
+            .flat_map(|a| self.store.entries_for_account(a.id))
+            .filter(|e| e.pot_id == Some(pot_id) && !e.is_voided() && e.bank_state != BankState::Reverted)
+            .collect()
     }
 
     fn own_accounts_total(&self, currency: &Currency) -> Decimal {
@@ -609,6 +675,108 @@ mod tests {
         ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100));
         ledger.open_account("A friend", eur.clone(), AccountKind::Person, dec!(500));
         assert_eq!(ledger.general_savings(&eur), dec!(100));
+    }
+
+    #[test]
+    fn tagging_an_expense_to_a_pot_draws_the_pot_down_and_leaves_general_savings_alone() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
+        let pot = ledger.open_pot("Camera", eur.clone(), None, None);
+        ledger.allocate_to_pot(pot.id, dec!(900), a_date()).unwrap();
+        assert_eq!(ledger.general_savings(&eur), dec!(100));
+
+        let purchase = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-900), "Camera shop")
+            .unwrap();
+        ledger
+            .update_entry_metadata(purchase.id, Some("Electronics".to_string()), Vec::new(), None, Some(pot.id))
+            .unwrap();
+
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(0)));
+        assert_eq!(ledger.general_savings(&eur), dec!(100));
+    }
+
+    #[test]
+    fn tagging_an_expense_that_would_push_the_pot_negative_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
+        let pot = ledger.open_pot("Camera", eur, None, None);
+        ledger.allocate_to_pot(pot.id, dec!(500), a_date()).unwrap();
+        let purchase = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-900), "Camera shop")
+            .unwrap();
+        let result = ledger.update_entry_metadata(purchase.id, None, Vec::new(), None, Some(pot.id));
+        assert_eq!(result, Err(LedgerError::PotWouldGoNegative));
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(500)));
+    }
+
+    #[test]
+    fn moving_a_tag_off_a_pot_that_would_go_negative_without_it_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000));
+        let pot = ledger.open_pot("Camera", eur, None, None);
+        let income = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(50), "Sold something")
+            .unwrap();
+        ledger
+            .update_entry_metadata(income.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        let expense = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-30), "Camera strap")
+            .unwrap();
+        ledger
+            .update_entry_metadata(expense.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+
+        // Untagging the +50 income would leave the pot at -30.
+        let result = ledger.update_entry_metadata(income.id, None, Vec::new(), None, None);
+        assert_eq!(result, Err(LedgerError::PotWouldGoNegative));
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+    }
+
+    #[test]
+    fn category_tags_and_note_can_be_changed_on_a_locked_imported_entry() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let entry = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-20), "Wolt")
+            .unwrap();
+        ledger.confirm_entry(entry.id).unwrap();
+        // The amount is locked now, but its metadata is not.
+        assert_eq!(
+            ledger.edit_manual_entry_amount(entry.id, dec!(-1)),
+            Err(LedgerError::EntryLocked)
+        );
+        let updated = ledger
+            .update_entry_metadata(
+                entry.id,
+                Some("Food delivery".to_string()),
+                vec!["late night".to_string()],
+                Some("forgot to cook".to_string()),
+                None,
+            )
+            .unwrap();
+        assert_eq!(updated.category, Some("Food delivery".to_string()));
+        assert_eq!(updated.tags, vec!["late night".to_string()]);
+        assert_eq!(updated.note, Some("forgot to cook".to_string()));
+    }
+
+    #[test]
+    fn a_voided_entry_cannot_have_its_metadata_changed() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0));
+        let entry = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-20), "x")
+            .unwrap();
+        ledger.void_entry(entry.id, "wrong amount").unwrap();
+        let result = ledger.update_entry_metadata(entry.id, Some("Groceries".to_string()), Vec::new(), None, None);
+        assert_eq!(result, Err(LedgerError::AlreadyVoided));
     }
 
     #[test]
