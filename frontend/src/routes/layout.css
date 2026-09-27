@@ -1,0 +1,34 @@
+@import 'tailwindcss';
+
+/* Colors and fonts pulled directly from the UX design artifact's
+   artboards, not shadcn's defaults, so the app matches the approved design. */
+@theme {
+	--color-app: #ede8dc;
+	--color-page: #f6f3ec;
+	--color-foreground: #1b1a17;
+	--color-muted: #6b6559;
+	--color-muted-2: #8b8577;
+
+	--color-card: #ffffff;
+	--color-border: #e4dfd3;
+	--color-border-dashed: #d8d1c0;
+	--color-row-hover: #f1eee5;
+
+	--color-primary: #1f6f5c;
+	--color-primary-foreground: #ffffff;
+	--color-accent-blue: #6b8fb0;
+
+	--color-warn-bg: #fbefe3;
+	--color-warn-border: #f0d9be;
+	--color-warn-foreground: #6b3a16;
+	--color-warn-icon: #9a5620;
+
+	--font-display: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+	--font-sans: 'Public Sans', ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+	background: var(--color-app);
+	color: var(--color-foreground);
+	font-family: var(--font-sans);
+}
