@@ -1,0 +1,31 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Node / Svelte frontend (once it exists)
+node_modules/
+dist/
+.svelte-kit/
+build/
+
+# Secrets, never committed
+.env
+.env.*
+values.secret.yaml
+*.secret.yaml
+
+# Helm packaging output
+*.tgz
+charts/*/charts/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs
+*.log
