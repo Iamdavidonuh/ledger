@@ -33,7 +33,10 @@ impl From<rusqlite::Error> for LedgerError {
 }
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(include_str!("../migrations/0001_initial.sql"))])
+    Migrations::new(vec![
+        M::up(include_str!("../migrations/0001_initial.sql")),
+        M::up(include_str!("../migrations/0002_entries_pot_id_index.sql")),
+    ])
 }
 
 pub struct SqliteStore {
@@ -331,6 +334,20 @@ impl LedgerStore for SqliteStore {
         let mut stmt = self.conn.prepare("SELECT id FROM entries WHERE account_id = ?1")?;
         let ids: Vec<Uuid> = stmt
             .query_map(rusqlite::params![account_id.to_string()], |row| row.get::<_, String>(0))?
+            .map(|id_str| -> Result<Uuid, LedgerError> { uuid_from_text(&id_str?) })
+            .collect::<Result<Vec<Uuid>, LedgerError>>()?;
+        ids.into_iter()
+            .map(|id| {
+                self.get_entry(id)?
+                    .ok_or_else(|| LedgerError::Storage(format!("entry {id} listed by id but could not be read back")))
+            })
+            .collect()
+    }
+
+    fn entries_for_pot(&self, pot_id: Uuid) -> Result<Vec<Entry>, LedgerError> {
+        let mut stmt = self.conn.prepare("SELECT id FROM entries WHERE pot_id = ?1")?;
+        let ids: Vec<Uuid> = stmt
+            .query_map(rusqlite::params![pot_id.to_string()], |row| row.get::<_, String>(0))?
             .map(|id_str| -> Result<Uuid, LedgerError> { uuid_from_text(&id_str?) })
             .collect::<Result<Vec<Uuid>, LedgerError>>()?;
         ids.into_iter()
@@ -819,6 +836,25 @@ mod tests {
     fn an_account_with_no_entries_returns_an_empty_list() {
         let store = SqliteStore::open_in_memory().unwrap();
         assert_eq!(store.entries_for_account(Uuid::new_v4()).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn entries_for_pot_returns_only_entries_tagged_to_that_pot() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        store.save_account(account.clone()).unwrap();
+        let pot_id = Uuid::new_v4();
+        let mut tagged = sample_entry(account.id);
+        tagged.pot_id = Some(pot_id);
+        store.save_entry(tagged).unwrap();
+        store.save_entry(sample_entry(account.id)).unwrap();
+        assert_eq!(store.entries_for_pot(pot_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_pot_with_no_tagged_entries_returns_an_empty_list() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        assert_eq!(store.entries_for_pot(Uuid::new_v4()).unwrap().len(), 0);
     }
 
     #[test]

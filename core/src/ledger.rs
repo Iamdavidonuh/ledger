@@ -293,15 +293,12 @@ impl<S: LedgerStore> Ledger<S> {
     /// it down, matching the spec's pot balance rule directly since amounts
     /// are already signed.
     fn entries_tagged_to_pot(&self, pot_id: Uuid) -> Result<Vec<Entry>, LedgerError> {
-        let mut tagged = Vec::new();
-        for account in self.store.all_accounts()? {
-            for entry in self.store.entries_for_account(account.id)? {
-                if entry.pot_id == Some(pot_id) && !entry.is_voided() && entry.bank_state != BankState::Reverted {
-                    tagged.push(entry);
-                }
-            }
-        }
-        Ok(tagged)
+        Ok(self
+            .store
+            .entries_for_pot(pot_id)?
+            .into_iter()
+            .filter(|entry| !entry.is_voided() && entry.bank_state != BankState::Reverted)
+            .collect())
     }
 
     fn own_accounts_total(&self, currency: &Currency) -> Result<Decimal, LedgerError> {

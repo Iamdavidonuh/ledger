@@ -14,6 +14,7 @@ pub trait LedgerStore {
     fn save_entry(&mut self, entry: Entry) -> Result<(), LedgerError>;
     fn get_entry(&self, id: Uuid) -> Result<Option<Entry>, LedgerError>;
     fn entries_for_account(&self, account_id: Uuid) -> Result<Vec<Entry>, LedgerError>;
+    fn entries_for_pot(&self, pot_id: Uuid) -> Result<Vec<Entry>, LedgerError>;
 
     fn save_entry_parts(&mut self, entry_id: Uuid, parts: Vec<EntryPart>) -> Result<(), LedgerError>;
     fn parts_for_entry(&self, entry_id: Uuid) -> Result<Vec<EntryPart>, LedgerError>;
@@ -78,6 +79,15 @@ impl LedgerStore for InMemoryStore {
             .entries
             .values()
             .filter(|e| e.account_id == account_id)
+            .cloned()
+            .collect())
+    }
+
+    fn entries_for_pot(&self, pot_id: Uuid) -> Result<Vec<Entry>, LedgerError> {
+        Ok(self
+            .entries
+            .values()
+            .filter(|e| e.pot_id == Some(pot_id))
             .cloned()
             .collect())
     }
