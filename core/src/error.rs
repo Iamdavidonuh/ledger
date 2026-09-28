@@ -29,6 +29,21 @@ pub enum LedgerError {
     PotCurrencyMismatch,
     #[error("a transfer needs two different accounts")]
     TransferToSelfNotAllowed,
+    #[error("this account already has an import that is not fully resolved")]
+    IncompleteImportExists,
+    #[error("bulk accept is blocked: {suspicious_count} suspicious and {reverted_candidate_count} reverted-candidate rows need a decision first")]
+    BulkAcceptBlocked {
+        suspicious_count: usize,
+        reverted_candidate_count: usize,
+    },
+    #[error("this queue row has no suggested entry to revert; discard it instead")]
+    NoSuggestedMatch,
+    #[error("that action does not apply to this kind of queue row")]
+    WrongQueueRowKind,
+    #[error("import {0} not found")]
+    ImportNotFound(Uuid),
+    #[error("queue row {0} not found")]
+    QueueRowNotFound(Uuid),
     #[error("storage error: {0}")]
     Storage(String),
 }
