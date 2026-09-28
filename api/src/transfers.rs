@@ -4,14 +4,13 @@ use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
 use chrono::NaiveDate;
-use ledger_core::Entry;
+use ledger_core::{AccountId, Entry, Transfer, TransferLeg};
 use rust_decimal::Decimal;
-use uuid::Uuid;
 
 #[derive(serde::Deserialize)]
 pub struct TransferRequest {
-    pub from_account_id: Uuid,
-    pub to_account_id: Uuid,
+    pub from_account_id: AccountId,
+    pub to_account_id: AccountId,
     pub date: NaiveDate,
     pub amount_sent: Decimal,
     pub amount_received: Decimal,
@@ -34,15 +33,16 @@ async fn create_transfer(
 ) -> Result<Json<TransferResponse>, AppError> {
     let (out_entry, in_entry) = state
         .with_ledger(move |ledger| {
-            ledger.transfer(
-                req.from_account_id,
-                req.to_account_id,
+            ledger.transfer(Transfer::new(
+                TransferLeg::new(req.from_account_id, req.amount_sent),
+                TransferLeg::new(req.to_account_id, req.amount_received),
                 req.date,
-                req.amount_sent,
-                req.amount_received,
-                &req.description,
-            )
+                req.description,
+            ))
         })
         .await?;
-    Ok(Json(TransferResponse { out_entry, in_entry }))
+    Ok(Json(TransferResponse {
+        out_entry,
+        in_entry,
+    }))
 }

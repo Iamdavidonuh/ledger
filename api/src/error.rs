@@ -48,7 +48,8 @@ impl From<ImportError> for AppError {
 impl From<JsonRejection> for AppError {
     fn from(e: JsonRejection) -> Self {
         AppError::BadRequest(e.body_text())
-    }}
+    }
+}
 
 /// A JSON extractor that maps deserialization failures to `AppError::BadRequest`
 /// (400) rather than Axum's default 422, so an invalid currency code or other
@@ -64,7 +65,10 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
             AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, json!({ "error": message })),
-            AppError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": message })),
+            AppError::Internal(message) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": message }),
+            ),
             AppError::Ledger(
                 e @ (LedgerError::AccountNotFound(_)
                 | LedgerError::EntryNotFound(_)
@@ -72,11 +76,15 @@ impl IntoResponse for AppError {
                 | LedgerError::ImportNotFound(_)
                 | LedgerError::QueueRowNotFound(_)),
             ) => (StatusCode::NOT_FOUND, json!({ "error": e.to_string() })),
-            AppError::Ledger(e @ LedgerError::Storage(_)) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": e.to_string() }))
-            }
+            AppError::Ledger(e @ LedgerError::Storage(_)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({ "error": e.to_string() }),
+            ),
             AppError::Ledger(
-                e @ LedgerError::BulkAcceptBlocked { suspicious_count, reverted_candidate_count },
+                e @ LedgerError::BulkAcceptBlocked {
+                    suspicious_count,
+                    reverted_candidate_count,
+                },
             ) => (
                 StatusCode::CONFLICT,
                 json!({
@@ -86,14 +94,22 @@ impl IntoResponse for AppError {
                 }),
             ),
             AppError::Ledger(
-                e @ (LedgerError::IncompleteImportExists | LedgerError::NoSuggestedMatch | LedgerError::WrongQueueRowKind),
+                e @ (LedgerError::IncompleteImportExists
+                | LedgerError::NoSuggestedMatch
+                | LedgerError::WrongQueueRowKind),
             ) => (StatusCode::CONFLICT, json!({ "error": e.to_string() })),
-            AppError::Ledger(e) => (StatusCode::UNPROCESSABLE_ENTITY, json!({ "error": e.to_string() })),
+            AppError::Ledger(e) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "error": e.to_string() }),
+            ),
             AppError::Import(e @ ImportError::BalanceCheckFailed { expected, actual }) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 json!({ "error": e.to_string(), "expected": expected, "actual": actual }),
             ),
-            AppError::Import(e) => (StatusCode::UNPROCESSABLE_ENTITY, json!({ "error": e.to_string() })),
+            AppError::Import(e) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "error": e.to_string() }),
+            ),
         };
         (status, Json(body)).into_response()
     }
@@ -103,8 +119,8 @@ impl IntoResponse for AppError {
 mod tests {
     use super::*;
     use http_body_util::BodyExt;
+    use ledger_core::{ImportId, QueueRowId};
     use rust_decimal_macros::dec;
-    use uuid::Uuid;
 
     async fn respond(e: AppError) -> (StatusCode, serde_json::Value) {
         let response = e.into_response();
@@ -115,14 +131,21 @@ mod tests {
 
     #[tokio::test]
     async fn import_and_queue_row_not_found_are_404() {
-        for e in [LedgerError::ImportNotFound(Uuid::new_v4()), LedgerError::QueueRowNotFound(Uuid::new_v4())] {
+        for e in [
+            LedgerError::ImportNotFound(ImportId::generate()),
+            LedgerError::QueueRowNotFound(QueueRowId::generate()),
+        ] {
             assert_eq!(respond(AppError::from(e)).await.0, StatusCode::NOT_FOUND);
         }
     }
 
     #[tokio::test]
     async fn review_queue_conflicts_are_409() {
-        for e in [LedgerError::IncompleteImportExists, LedgerError::NoSuggestedMatch, LedgerError::WrongQueueRowKind] {
+        for e in [
+            LedgerError::IncompleteImportExists,
+            LedgerError::NoSuggestedMatch,
+            LedgerError::WrongQueueRowKind,
+        ] {
             assert_eq!(respond(AppError::from(e)).await.0, StatusCode::CONFLICT);
         }
     }
@@ -143,7 +166,9 @@ mod tests {
     #[tokio::test]
     async fn a_transfer_to_self_is_422() {
         assert_eq!(
-            respond(AppError::from(LedgerError::TransferToSelfNotAllowed)).await.0,
+            respond(AppError::from(LedgerError::TransferToSelfNotAllowed))
+                .await
+                .0,
             StatusCode::UNPROCESSABLE_ENTITY
         );
     }
@@ -155,14 +180,20 @@ mod tests {
             ImportError::PdfToText("missing".to_string()),
             ImportError::NotAStatement,
         ] {
-            assert_eq!(respond(AppError::from(e)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(
+                respond(AppError::from(e)).await.0,
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
         }
     }
 
     #[tokio::test]
     async fn a_failed_balance_check_carries_both_figures_as_fields() {
-        let (status, body) =
-            respond(AppError::from(ImportError::BalanceCheckFailed { expected: dec!(90.00), actual: dec!(88.00) })).await;
+        let (status, body) = respond(AppError::from(ImportError::BalanceCheckFailed {
+            expected: dec!(90.00),
+            actual: dec!(88.00),
+        }))
+        .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body["expected"], "90.00");
         assert_eq!(body["actual"], "88.00");

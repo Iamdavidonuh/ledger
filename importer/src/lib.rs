@@ -41,7 +41,7 @@ pub struct RevertedCandidate {
 
 /// What `BankReader::read` returns: the raw parsed data from the file.
 /// `Importer::parse` wraps it, runs the balance check on top, and returns
-/// the same type once it passes — there is no partial or pre-check variant.
+/// the same type once it passes; there is no partial or pre-check variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseResult {
     pub date_range: DateRange,
@@ -90,7 +90,10 @@ impl<T: BankReader> Importer<T> {
             .sum();
         let actual = parsed.opening_balance + completed;
         if actual != parsed.closing_balance {
-            return Err(ImportError::BalanceCheckFailed { expected: parsed.closing_balance, actual });
+            return Err(ImportError::BalanceCheckFailed {
+                expected: parsed.closing_balance,
+                actual,
+            });
         }
         Ok(parsed)
     }
@@ -138,8 +141,13 @@ mod tests {
 
     #[test]
     fn a_statement_whose_completed_rows_reach_the_closing_balance_parses() {
-        let rows = vec![row(dec!(-10), BankState::Completed), row(dec!(25.5), BankState::Completed)];
-        let result = Importer::new(Stub(Ok(statement(rows.clone(), dec!(100), dec!(115.5))))).parse(b"").unwrap();
+        let rows = vec![
+            row(dec!(-10), BankState::Completed),
+            row(dec!(25.5), BankState::Completed),
+        ];
+        let result = Importer::new(Stub(Ok(statement(rows.clone(), dec!(100), dec!(115.5)))))
+            .parse(b"")
+            .unwrap();
         assert_eq!(result.rows, rows);
         assert_eq!(result.opening_balance, dec!(100));
         assert_eq!(result.closing_balance, dec!(115.5));
@@ -148,7 +156,10 @@ mod tests {
 
     #[test]
     fn pending_rows_and_reverted_candidates_are_left_out_of_the_balance_check() {
-        let rows = vec![row(dec!(-10), BankState::Completed), row(dec!(-99), BankState::Pending)];
+        let rows = vec![
+            row(dec!(-10), BankState::Completed),
+            row(dec!(-99), BankState::Pending),
+        ];
         let result = Importer::new(Stub(Ok(statement(rows, dec!(100), dec!(90))))).parse(b"");
         assert!(result.is_ok());
     }
@@ -159,7 +170,10 @@ mod tests {
         let result = Importer::new(Stub(Ok(statement(rows, dec!(100), dec!(80))))).parse(b"");
         assert_eq!(
             result,
-            Err(ImportError::BalanceCheckFailed { expected: dec!(80), actual: dec!(90) })
+            Err(ImportError::BalanceCheckFailed {
+                expected: dec!(80),
+                actual: dec!(90)
+            })
         );
     }
 

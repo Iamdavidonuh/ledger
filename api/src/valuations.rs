@@ -4,9 +4,8 @@ use axum::extract::{Path, State};
 use axum::routing::post;
 use axum::{Json, Router};
 use chrono::NaiveDate;
-use ledger_core::Valuation;
+use ledger_core::{AccountId, Valuation};
 use rust_decimal::Decimal;
-use uuid::Uuid;
 
 #[derive(serde::Deserialize)]
 pub struct UpdateValueRequest {
@@ -21,11 +20,13 @@ pub fn router() -> Router<AppState> {
 
 async fn update_current_value(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<AccountId>,
     Json(req): Json<UpdateValueRequest>,
 ) -> Result<Json<Valuation>, AppError> {
     let valuation = state
-        .with_ledger(move |ledger| ledger.update_current_value(id, req.new_value, &req.category, req.date))
+        .with_ledger(move |ledger| {
+            ledger.update_current_value(id, req.new_value, &req.category, req.date)
+        })
         .await?;
     Ok(Json(valuation))
 }

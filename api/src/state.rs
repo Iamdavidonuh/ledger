@@ -29,7 +29,9 @@ impl AppState {
     {
         let ledger = self.ledger.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = ledger.lock().map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
+            let mut guard = ledger
+                .lock()
+                .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
             f(&mut guard).map_err(AppError::from)
         })
         .await

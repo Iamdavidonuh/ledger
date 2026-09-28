@@ -2,7 +2,10 @@ use crate::account::{Account, AccountKind};
 use crate::currency::Currency;
 use crate::entry::{BankState, Entry, EntryPart, EntrySource};
 use crate::error::LedgerError;
-use crate::import::{Import, ImportQueueRow, ImportQueueRowMatch, MatchTarget, QueueRowKind};
+use crate::id::{AccountId, EntryId, ImportId, MatchId, PotId, QueueRowId};
+use crate::import::{
+    Import, ImportQueueRow, ImportQueueRowMatch, MatchTarget, NormalDetail, RowDetail,
+};
 use crate::pot::{Allocation, Pot};
 use crate::store::LedgerStore;
 use crate::valuation::Valuation;
@@ -74,7 +77,9 @@ fn account_kind_from_str(s: &str) -> Result<AccountKind, LedgerError> {
         "outside" => Ok(AccountKind::Outside),
         "person" => Ok(AccountKind::Person),
         "investment" => Ok(AccountKind::Investment),
-        other => Err(LedgerError::Storage(format!("unknown account kind {other:?} stored in the database"))),
+        other => Err(LedgerError::Storage(format!(
+            "unknown account kind {other:?} stored in the database"
+        ))),
     }
 }
 
@@ -89,7 +94,9 @@ fn entry_source_from_str(s: &str) -> Result<EntrySource, LedgerError> {
     match s {
         "manual" => Ok(EntrySource::Manual),
         "imported" => Ok(EntrySource::Imported),
-        other => Err(LedgerError::Storage(format!("unknown entry source {other:?} stored in the database"))),
+        other => Err(LedgerError::Storage(format!(
+            "unknown entry source {other:?} stored in the database"
+        ))),
     }
 }
 
@@ -106,22 +113,59 @@ fn bank_state_from_str(s: &str) -> Result<BankState, LedgerError> {
         "completed" => Ok(BankState::Completed),
         "pending" => Ok(BankState::Pending),
         "reverted" => Ok(BankState::Reverted),
-        other => Err(LedgerError::Storage(format!("unknown bank state {other:?} stored in the database"))),
+        other => Err(LedgerError::Storage(format!(
+            "unknown bank state {other:?} stored in the database"
+        ))),
     }
 }
 
-fn queue_row_kind_to_str(kind: QueueRowKind) -> &'static str {
+const NORMAL_KIND: &str = "normal";
+const REVERTED_CANDIDATE_KIND: &str = "reverted_candidate";
+
+/// The table keeps one column set for both kinds of row; a candidate stores
+/// an empty description, the `reverted` bank state and no category.
+struct QueueRowColumns {
+    kind: &'static str,
+    description: String,
+    bank_state: &'static str,
+    category: Option<String>,
+}
+
+impl From<RowDetail> for QueueRowColumns {
+    fn from(detail: RowDetail) -> Self {
+        match detail {
+            RowDetail::Normal(normal) => QueueRowColumns {
+                kind: NORMAL_KIND,
+                description: normal.description,
+                bank_state: bank_state_to_str(normal.bank_state),
+                category: normal.category,
+            },
+            RowDetail::RevertedCandidate => QueueRowColumns {
+                kind: REVERTED_CANDIDATE_KIND,
+                description: String::new(),
+                bank_state: bank_state_to_str(BankState::Reverted),
+                category: None,
+            },
+        }
+    }
+}
+
+fn row_detail_from_columns(
+    kind: &str,
+    description: String,
+    bank_state: &str,
+    category: Option<String>,
+) -> Result<RowDetail, LedgerError> {
     match kind {
-        QueueRowKind::Normal => "normal",
-        QueueRowKind::RevertedCandidate => "reverted_candidate",
-    }
-}
-
-fn queue_row_kind_from_str(s: &str) -> Result<QueueRowKind, LedgerError> {
-    match s {
-        "normal" => Ok(QueueRowKind::Normal),
-        "reverted_candidate" => Ok(QueueRowKind::RevertedCandidate),
-        other => Err(LedgerError::Storage(format!("unknown queue row kind {other:?} stored in the database"))),
+        NORMAL_KIND => Ok(RowDetail::Normal(NormalDetail {
+            description,
+            bank_state: bank_state_from_str(bank_state)?,
+            category,
+        })),
+        REVERTED_CANDIDATE_KIND => Ok(RowDetail::RevertedCandidate),
+        other => Err(LedgerError::Storage(format!(
+            "unknown queue row kind {other:?} stored in the database"
+        ))),
     }
 }
 
@@ -132,11 +176,16 @@ fn datetime_from_text(s: &str) -> Result<chrono::DateTime<chrono::Utc>, LedgerEr
 }
 
 fn decimal_from_text(s: &str) -> Result<Decimal, LedgerError> {
-    Decimal::from_str(s).map_err(|_| LedgerError::Storage(format!("stored value {s:?} is not a valid decimal amount")))
+    Decimal::from_str(s).map_err(|_| {
+        LedgerError::Storage(format!("stored value {s:?} is not a valid decimal amount"))
+    })
 }
 
-fn uuid_from_text(s: &str) -> Result<Uuid, LedgerError> {
-    Uuid::parse_str(s).map_err(|_| LedgerError::Storage(format!("stored value {s:?} is not a valid UUID")))
+/// Reads any of the ledger's id types back from its stored UUID text.
+fn id_from_text<T: From<Uuid>>(s: &str) -> Result<T, LedgerError> {
+    Uuid::parse_str(s)
+        .map(T::from)
+        .map_err(|_| LedgerError::Storage(format!("stored value {s:?} is not a valid UUID")))
 }
 
 fn date_from_text(s: &str) -> Result<chrono::NaiveDate, LedgerError> {
@@ -159,7 +208,17 @@ const QUEUE_ROW_COLUMNS: &str =
     "id, import_id, kind, date, time, amount, currency, description, bank_state, category";
 const MATCH_COLUMNS: &str = "id, queue_row_id, matched_entry_id, matched_queue_row_id";
 
-type RawImport = (String, String, String, String, String, i64, String, String, i64);
+type RawImport = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    i64,
+);
 
 fn raw_import(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawImport> {
     Ok((
@@ -176,10 +235,20 @@ fn raw_import(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawImport> {
 }
 
 fn import_from_raw(raw: RawImport) -> Result<Import, LedgerError> {
-    let (id, account_id, currency, file_name, uploaded_at, rows_read, opening_balance, closing_balance, completed) = raw;
+    let (
+        id,
+        account_id,
+        currency,
+        file_name,
+        uploaded_at,
+        rows_read,
+        opening_balance,
+        closing_balance,
+        completed,
+    ) = raw;
     Ok(Import {
-        id: uuid_from_text(&id)?,
-        account_id: uuid_from_text(&account_id)?,
+        id: id_from_text(&id)?,
+        account_id: id_from_text(&account_id)?,
         currency: currency_from_text(&currency)?,
         file_name,
         uploaded_at: datetime_from_text(&uploaded_at)?,
@@ -190,7 +259,18 @@ fn import_from_raw(raw: RawImport) -> Result<Import, LedgerError> {
     })
 }
 
-type RawQueueRow = (String, String, String, String, Option<String>, String, String, String, String, Option<String>);
+type RawQueueRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+);
 
 fn raw_queue_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawQueueRow> {
     Ok((
@@ -208,18 +288,16 @@ fn raw_queue_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawQueueRow> {
 }
 
 fn queue_row_from_raw(raw: RawQueueRow) -> Result<ImportQueueRow, LedgerError> {
-    let (id, import_id, kind, date, time, amount, currency, description, bank_state, category) = raw;
+    let (id, import_id, kind, date, time, amount, currency, description, bank_state, category) =
+        raw;
     Ok(ImportQueueRow {
-        id: uuid_from_text(&id)?,
-        import_id: uuid_from_text(&import_id)?,
-        kind: queue_row_kind_from_str(&kind)?,
+        id: id_from_text(&id)?,
+        import_id: id_from_text(&import_id)?,
         date: date_from_text(&date)?,
         time: time.map(|t| time_from_text(&t)).transpose()?,
         amount: decimal_from_text(&amount)?,
         currency: currency_from_text(&currency)?,
-        description,
-        bank_state: bank_state_from_str(&bank_state)?,
-        category,
+        detail: row_detail_from_columns(&kind, description, &bank_state, category)?,
     })
 }
 
@@ -232,8 +310,8 @@ fn raw_match(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawMatch> {
 fn match_from_raw(raw: RawMatch) -> Result<ImportQueueRowMatch, LedgerError> {
     let (id, queue_row_id, matched_entry_id, matched_queue_row_id) = raw;
     let target = match (
-        matched_entry_id.map(|s| uuid_from_text(&s)).transpose()?,
-        matched_queue_row_id.map(|s| uuid_from_text(&s)).transpose()?,
+        matched_entry_id.map(|s| id_from_text(&s)).transpose()?,
+        matched_queue_row_id.map(|s| id_from_text(&s)).transpose()?,
     ) {
         (Some(entry_id), None) => MatchTarget::Entry { entry_id },
         (None, Some(queue_row_id)) => MatchTarget::QueueRow { queue_row_id },
@@ -243,32 +321,58 @@ fn match_from_raw(raw: RawMatch) -> Result<ImportQueueRowMatch, LedgerError> {
             ))
         }
     };
-    Ok(ImportQueueRowMatch { id: uuid_from_text(&id)?, queue_row_id: uuid_from_text(&queue_row_id)?, target })
+    Ok(ImportQueueRowMatch {
+        id: id_from_text(&id)?,
+        queue_row_id: id_from_text(&queue_row_id)?,
+        target,
+    })
 }
 
 impl SqliteStore {
-    fn query_imports(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<Import>, LedgerError> {
+    fn query_imports(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<Import>, LedgerError> {
         let mut stmt = self.conn.prepare(sql)?;
-        let raws = stmt.query_map(params, raw_import)?.collect::<Result<Vec<_>, rusqlite::Error>>()?;
+        let raws = stmt
+            .query_map(params, raw_import)?
+            .collect::<Result<Vec<_>, rusqlite::Error>>()?;
         raws.into_iter().map(import_from_raw).collect()
     }
 
-    fn query_queue_rows(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<ImportQueueRow>, LedgerError> {
+    fn query_queue_rows(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<ImportQueueRow>, LedgerError> {
         let mut stmt = self.conn.prepare(sql)?;
-        let raws = stmt.query_map(params, raw_queue_row)?.collect::<Result<Vec<_>, rusqlite::Error>>()?;
+        let raws = stmt
+            .query_map(params, raw_queue_row)?
+            .collect::<Result<Vec<_>, rusqlite::Error>>()?;
         raws.into_iter().map(queue_row_from_raw).collect()
     }
 
-    fn query_matches(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
+    fn query_matches(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
         let mut stmt = self.conn.prepare(sql)?;
-        let raws = stmt.query_map(params, raw_match)?.collect::<Result<Vec<_>, rusqlite::Error>>()?;
+        let raws = stmt
+            .query_map(params, raw_match)?
+            .collect::<Result<Vec<_>, rusqlite::Error>>()?;
         raws.into_iter().map(match_from_raw).collect()
     }
 
-    fn tags_for_entry(&self, entry_id: Uuid) -> Result<Vec<String>, LedgerError> {
-        let mut stmt = self.conn.prepare("SELECT tag FROM entry_tags WHERE entry_id = ?1")?;
+    fn tags_for_entry(&self, entry_id: EntryId) -> Result<Vec<String>, LedgerError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tag FROM entry_tags WHERE entry_id = ?1")?;
         let tags = stmt
-            .query_map(rusqlite::params![entry_id.to_string()], |row| row.get::<_, String>(0))?
+            .query_map(rusqlite::params![entry_id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })?
             .collect::<Result<Vec<String>, rusqlite::Error>>()?;
         Ok(tags)
     }
@@ -299,7 +403,7 @@ impl LedgerStore for SqliteStore {
         Ok(())
     }
 
-    fn get_account(&self, id: Uuid) -> Result<Option<Account>, LedgerError> {
+    fn get_account(&self, id: AccountId) -> Result<Option<Account>, LedgerError> {
         let row = self
             .conn
             .query_row(
@@ -350,17 +454,19 @@ impl LedgerStore for SqliteStore {
             })?
             .collect::<Result<Vec<_>, rusqlite::Error>>()?;
         raws.into_iter()
-            .map(|(id, name, currency, kind, opening_balance, archived, current_value)| {
-                Ok(Account {
-                    id: uuid_from_text(&id)?,
-                    name,
-                    currency: currency_from_text(&currency)?,
-                    kind: account_kind_from_str(&kind)?,
-                    opening_balance: decimal_from_text(&opening_balance)?,
-                    archived: archived != 0,
-                    current_value: current_value.map(|v| decimal_from_text(&v)).transpose()?,
-                })
-            })
+            .map(
+                |(id, name, currency, kind, opening_balance, archived, current_value)| {
+                    Ok(Account {
+                        id: id_from_text(&id)?,
+                        name,
+                        currency: currency_from_text(&currency)?,
+                        kind: account_kind_from_str(&kind)?,
+                        opening_balance: decimal_from_text(&opening_balance)?,
+                        archived: archived != 0,
+                        current_value: current_value.map(|v| decimal_from_text(&v)).transpose()?,
+                    })
+                },
+            )
             .collect()
     }
 
@@ -396,7 +502,10 @@ impl LedgerStore for SqliteStore {
                 entry.voided_reason,
             ],
         )?;
-        tx.execute("DELETE FROM entry_tags WHERE entry_id = ?1", rusqlite::params![entry.id.to_string()])?;
+        tx.execute(
+            "DELETE FROM entry_tags WHERE entry_id = ?1",
+            rusqlite::params![entry.id.to_string()],
+        )?;
         let mut seen = std::collections::HashSet::new();
         for tag in &entry.tags {
             if seen.insert(tag) {
@@ -410,7 +519,7 @@ impl LedgerStore for SqliteStore {
         Ok(())
     }
 
-    fn get_entry(&self, id: Uuid) -> Result<Option<Entry>, LedgerError> {
+    fn get_entry(&self, id: EntryId) -> Result<Option<Entry>, LedgerError> {
         let row = self
             .conn
             .query_row(
@@ -460,7 +569,7 @@ impl LedgerStore for SqliteStore {
         let tags = self.tags_for_entry(id)?;
         Ok(Some(Entry {
             id,
-            account_id: uuid_from_text(&account_id)?,
+            account_id: id_from_text(&account_id)?,
             date: date_from_text(&date)?,
             time: time.map(|t| time_from_text(&t)).transpose()?,
             amount: decimal_from_text(&amount)?,
@@ -469,8 +578,8 @@ impl LedgerStore for SqliteStore {
             note,
             category,
             tags,
-            pot_id: pot_id.map(|s| uuid_from_text(&s)).transpose()?,
-            transfer_account_id: transfer_account_id.map(|s| uuid_from_text(&s)).transpose()?,
+            pot_id: pot_id.map(|s| id_from_text(&s)).transpose()?,
+            transfer_account_id: transfer_account_id.map(|s| id_from_text(&s)).transpose()?,
             source: entry_source_from_str(&source)?,
             bank_state: bank_state_from_str(&bank_state)?,
             confirmed: confirmed != 0,
@@ -478,59 +587,82 @@ impl LedgerStore for SqliteStore {
         }))
     }
 
-    fn entries_for_account(&self, account_id: Uuid) -> Result<Vec<Entry>, LedgerError> {
-        let mut stmt = self.conn.prepare("SELECT id FROM entries WHERE account_id = ?1")?;
-        let ids: Vec<Uuid> = stmt
-            .query_map(rusqlite::params![account_id.to_string()], |row| row.get::<_, String>(0))?
-            .map(|id_str| -> Result<Uuid, LedgerError> { uuid_from_text(&id_str?) })
-            .collect::<Result<Vec<Uuid>, LedgerError>>()?;
+    fn entries_for_account(&self, account_id: AccountId) -> Result<Vec<Entry>, LedgerError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM entries WHERE account_id = ?1")?;
+        let ids: Vec<EntryId> = stmt
+            .query_map(rusqlite::params![account_id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|id_str| -> Result<EntryId, LedgerError> { id_from_text(&id_str?) })
+            .collect::<Result<Vec<EntryId>, LedgerError>>()?;
         ids.into_iter()
             .map(|id| {
-                self.get_entry(id)?
-                    .ok_or_else(|| LedgerError::Storage(format!("entry {id} listed by id but could not be read back")))
+                self.get_entry(id)?.ok_or_else(|| {
+                    LedgerError::Storage(format!(
+                        "entry {id} listed by id but could not be read back"
+                    ))
+                })
             })
             .collect()
     }
 
-    fn entries_for_pot(&self, pot_id: Uuid) -> Result<Vec<Entry>, LedgerError> {
-        let mut stmt = self.conn.prepare("SELECT id FROM entries WHERE pot_id = ?1")?;
-        let ids: Vec<Uuid> = stmt
-            .query_map(rusqlite::params![pot_id.to_string()], |row| row.get::<_, String>(0))?
-            .map(|id_str| -> Result<Uuid, LedgerError> { uuid_from_text(&id_str?) })
-            .collect::<Result<Vec<Uuid>, LedgerError>>()?;
+    fn entries_for_pot(&self, pot_id: PotId) -> Result<Vec<Entry>, LedgerError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM entries WHERE pot_id = ?1")?;
+        let ids: Vec<EntryId> = stmt
+            .query_map(rusqlite::params![pot_id.to_string()], |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|id_str| -> Result<EntryId, LedgerError> { id_from_text(&id_str?) })
+            .collect::<Result<Vec<EntryId>, LedgerError>>()?;
         ids.into_iter()
             .map(|id| {
-                self.get_entry(id)?
-                    .ok_or_else(|| LedgerError::Storage(format!("entry {id} listed by id but could not be read back")))
+                self.get_entry(id)?.ok_or_else(|| {
+                    LedgerError::Storage(format!(
+                        "entry {id} listed by id but could not be read back"
+                    ))
+                })
             })
             .collect()
     }
 
-    fn save_entry_parts(&mut self, entry_id: Uuid, parts: Vec<EntryPart>) -> Result<(), LedgerError> {
+    fn save_entry_parts(
+        &mut self,
+        entry_id: EntryId,
+        parts: Vec<EntryPart>,
+    ) -> Result<(), LedgerError> {
         let tx = self.conn.savepoint()?;
-        tx.execute("DELETE FROM entry_parts WHERE entry_id = ?1", rusqlite::params![entry_id.to_string()])?;
-        parts.into_iter().try_for_each(|part| -> Result<(), LedgerError> {
-            tx.execute(
-                "INSERT INTO entry_parts (id, entry_id, amount, category, transfer_account_id)
+        tx.execute(
+            "DELETE FROM entry_parts WHERE entry_id = ?1",
+            rusqlite::params![entry_id.to_string()],
+        )?;
+        parts
+            .into_iter()
+            .try_for_each(|part| -> Result<(), LedgerError> {
+                tx.execute(
+                    "INSERT INTO entry_parts (id, entry_id, amount, category, transfer_account_id)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![
-                    part.id.to_string(),
-                    entry_id.to_string(),
-                    part.amount.to_string(),
-                    part.category,
-                    part.transfer_account_id.map(|id| id.to_string()),
-                ],
-            )?;
-            Ok(())
-        })?;
+                    rusqlite::params![
+                        part.id.to_string(),
+                        entry_id.to_string(),
+                        part.amount.to_string(),
+                        part.category,
+                        part.transfer_account_id.map(|id| id.to_string()),
+                    ],
+                )?;
+                Ok(())
+            })?;
         tx.commit()?;
         Ok(())
     }
 
-    fn parts_for_entry(&self, entry_id: Uuid) -> Result<Vec<EntryPart>, LedgerError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, amount, category, transfer_account_id FROM entry_parts WHERE entry_id = ?1")?;
+    fn parts_for_entry(&self, entry_id: EntryId) -> Result<Vec<EntryPart>, LedgerError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, amount, category, transfer_account_id FROM entry_parts WHERE entry_id = ?1",
+        )?;
         let rows = stmt
             .query_map(rusqlite::params![entry_id.to_string()], |row| {
                 Ok((
@@ -544,11 +676,13 @@ impl LedgerStore for SqliteStore {
         rows.into_iter()
             .map(|(id, amount, category, transfer_account_id)| {
                 Ok(EntryPart {
-                    id: uuid_from_text(&id)?,
+                    id: id_from_text(&id)?,
                     entry_id,
                     amount: decimal_from_text(&amount)?,
                     category,
-                    transfer_account_id: transfer_account_id.map(|s| uuid_from_text(&s)).transpose()?,
+                    transfer_account_id: transfer_account_id
+                        .map(|s| id_from_text(&s))
+                        .transpose()?,
                 })
             })
             .collect()
@@ -572,7 +706,7 @@ impl LedgerStore for SqliteStore {
         Ok(())
     }
 
-    fn get_pot(&self, id: Uuid) -> Result<Option<Pot>, LedgerError> {
+    fn get_pot(&self, id: PotId) -> Result<Option<Pot>, LedgerError> {
         let row = self
             .conn
             .query_row(
@@ -601,7 +735,9 @@ impl LedgerStore for SqliteStore {
     }
 
     fn all_pots(&self) -> Result<Vec<Pot>, LedgerError> {
-        let mut stmt = self.conn.prepare("SELECT id, name, currency, target, priority FROM pots")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, currency, target, priority FROM pots")?;
         let raws = stmt
             .query_map([], |row| {
                 Ok((
@@ -616,7 +752,7 @@ impl LedgerStore for SqliteStore {
         raws.into_iter()
             .map(|(id, name, currency, target, priority)| {
                 Ok(Pot {
-                    id: uuid_from_text(&id)?,
+                    id: id_from_text(&id)?,
                     name,
                     currency: currency_from_text(&currency)?,
                     target: target.map(|t| decimal_from_text(&t)).transpose()?,
@@ -644,8 +780,10 @@ impl LedgerStore for SqliteStore {
         Ok(())
     }
 
-    fn allocations_for_pot(&self, pot_id: Uuid) -> Result<Vec<Allocation>, LedgerError> {
-        let mut stmt = self.conn.prepare("SELECT id, amount, date, note FROM allocations WHERE pot_id = ?1")?;
+    fn allocations_for_pot(&self, pot_id: PotId) -> Result<Vec<Allocation>, LedgerError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, amount, date, note FROM allocations WHERE pot_id = ?1")?;
         let rows = stmt
             .query_map(rusqlite::params![pot_id.to_string()], |row| {
                 Ok((
@@ -659,7 +797,7 @@ impl LedgerStore for SqliteStore {
         rows.into_iter()
             .map(|(id, amount, date, note)| {
                 Ok(Allocation {
-                    id: uuid_from_text(&id)?,
+                    id: id_from_text(&id)?,
                     pot_id,
                     amount: decimal_from_text(&amount)?,
                     date: date_from_text(&date)?,
@@ -693,10 +831,10 @@ impl LedgerStore for SqliteStore {
         Ok(())
     }
 
-    fn valuations_for_account(&self, account_id: Uuid) -> Result<Vec<Valuation>, LedgerError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, date, old_value, new_value, category FROM valuations WHERE account_id = ?1")?;
+    fn valuations_for_account(&self, account_id: AccountId) -> Result<Vec<Valuation>, LedgerError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, date, old_value, new_value, category FROM valuations WHERE account_id = ?1",
+        )?;
         let rows = stmt
             .query_map(rusqlite::params![account_id.to_string()], |row| {
                 Ok((
@@ -711,7 +849,7 @@ impl LedgerStore for SqliteStore {
         rows.into_iter()
             .map(|(id, date, old_value, new_value, category)| {
                 Ok(Valuation {
-                    id: uuid_from_text(&id)?,
+                    id: id_from_text(&id)?,
                     account_id,
                     date: date_from_text(&date)?,
                     old_value: decimal_from_text(&old_value)?,
@@ -747,22 +885,32 @@ impl LedgerStore for SqliteStore {
         Ok(())
     }
 
-    fn get_import(&self, id: Uuid) -> Result<Option<Import>, LedgerError> {
+    fn get_import(&self, id: ImportId) -> Result<Option<Import>, LedgerError> {
         Ok(self
-            .query_imports(&format!("SELECT {IMPORT_COLUMNS} FROM imports WHERE id = ?1"), [id.to_string()])?
+            .query_imports(
+                &format!("SELECT {IMPORT_COLUMNS} FROM imports WHERE id = ?1"),
+                [id.to_string()],
+            )?
             .pop())
     }
 
     fn all_imports(&self) -> Result<Vec<Import>, LedgerError> {
-        self.query_imports(&format!("SELECT {IMPORT_COLUMNS} FROM imports ORDER BY uploaded_at"), [])
+        self.query_imports(
+            &format!("SELECT {IMPORT_COLUMNS} FROM imports ORDER BY uploaded_at"),
+            [],
+        )
     }
 
-    fn delete_import(&mut self, id: Uuid) -> Result<(), LedgerError> {
-        self.conn.execute("DELETE FROM imports WHERE id = ?1", [id.to_string()])?;
+    fn delete_import(&mut self, id: ImportId) -> Result<(), LedgerError> {
+        self.conn
+            .execute("DELETE FROM imports WHERE id = ?1", [id.to_string()])?;
         Ok(())
     }
 
-    fn incomplete_import_for_account(&self, account_id: Uuid) -> Result<Option<Import>, LedgerError> {
+    fn incomplete_import_for_account(
+        &self,
+        account_id: AccountId,
+    ) -> Result<Option<Import>, LedgerError> {
         Ok(self
             .query_imports(
                 &format!("SELECT {IMPORT_COLUMNS} FROM imports WHERE account_id = ?1 AND completed = 0 LIMIT 1"),
@@ -772,6 +920,7 @@ impl LedgerStore for SqliteStore {
     }
 
     fn save_queue_row(&mut self, row: ImportQueueRow) -> Result<(), LedgerError> {
+        let columns = QueueRowColumns::from(row.detail);
         self.conn.execute(
             &format!(
                 "INSERT INTO import_queue_rows ({QUEUE_ROW_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -784,20 +933,20 @@ impl LedgerStore for SqliteStore {
             rusqlite::params![
                 row.id.to_string(),
                 row.import_id.to_string(),
-                queue_row_kind_to_str(row.kind),
+                columns.kind,
                 row.date.to_string(),
                 row.time.map(|t| t.to_string()),
                 row.amount.to_string(),
                 row.currency.code(),
-                row.description,
-                bank_state_to_str(row.bank_state),
-                row.category,
+                columns.description,
+                columns.bank_state,
+                columns.category,
             ],
         )?;
         Ok(())
     }
 
-    fn get_queue_row(&self, id: Uuid) -> Result<Option<ImportQueueRow>, LedgerError> {
+    fn get_queue_row(&self, id: QueueRowId) -> Result<Option<ImportQueueRow>, LedgerError> {
         Ok(self
             .query_queue_rows(
                 &format!("SELECT {QUEUE_ROW_COLUMNS} FROM import_queue_rows WHERE id = ?1"),
@@ -806,15 +955,21 @@ impl LedgerStore for SqliteStore {
             .pop())
     }
 
-    fn queue_rows_for_import(&self, import_id: Uuid) -> Result<Vec<ImportQueueRow>, LedgerError> {
+    fn queue_rows_for_import(
+        &self,
+        import_id: ImportId,
+    ) -> Result<Vec<ImportQueueRow>, LedgerError> {
         self.query_queue_rows(
             &format!("SELECT {QUEUE_ROW_COLUMNS} FROM import_queue_rows WHERE import_id = ?1 ORDER BY date, time"),
             [import_id.to_string()],
         )
     }
 
-    fn delete_queue_row(&mut self, id: Uuid) -> Result<(), LedgerError> {
-        self.conn.execute("DELETE FROM import_queue_rows WHERE id = ?1", [id.to_string()])?;
+    fn delete_queue_row(&mut self, id: QueueRowId) -> Result<(), LedgerError> {
+        self.conn.execute(
+            "DELETE FROM import_queue_rows WHERE id = ?1",
+            [id.to_string()],
+        )?;
         Ok(())
     }
 
@@ -835,7 +990,7 @@ impl LedgerStore for SqliteStore {
         Ok(())
     }
 
-    fn get_queue_row_match(&self, id: Uuid) -> Result<Option<ImportQueueRowMatch>, LedgerError> {
+    fn get_queue_row_match(&self, id: MatchId) -> Result<Option<ImportQueueRowMatch>, LedgerError> {
         Ok(self
             .query_matches(
                 &format!("SELECT {MATCH_COLUMNS} FROM import_queue_row_matches WHERE id = ?1"),
@@ -844,7 +999,10 @@ impl LedgerStore for SqliteStore {
             .pop())
     }
 
-    fn queue_row_matches_referencing(&self, queue_row_id: Uuid) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
+    fn queue_row_matches_referencing(
+        &self,
+        queue_row_id: QueueRowId,
+    ) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
         let id = queue_row_id.to_string();
         self.query_matches(
             &format!(
@@ -855,12 +1013,32 @@ impl LedgerStore for SqliteStore {
         )
     }
 
-    fn delete_queue_row_match(&mut self, id: Uuid) -> Result<(), LedgerError> {
-        self.conn.execute("DELETE FROM import_queue_row_matches WHERE id = ?1", [id.to_string()])?;
+    fn queue_row_matches_for_import(
+        &self,
+        import_id: ImportId,
+    ) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
+        self.query_matches(
+            "SELECT m.id, m.queue_row_id, m.matched_entry_id, m.matched_queue_row_id
+             FROM import_queue_row_matches m
+             JOIN import_queue_rows r ON r.id = m.queue_row_id
+             WHERE r.import_id = ?1",
+            rusqlite::params![import_id.to_string()],
+        )
+    }
+
+    fn delete_queue_row_match(&mut self, id: MatchId) -> Result<(), LedgerError> {
+        self.conn.execute(
+            "DELETE FROM import_queue_row_matches WHERE id = ?1",
+            [id.to_string()],
+        )?;
         Ok(())
     }
 
-    fn repoint_queue_row_matches(&mut self, from_queue_row_id: Uuid, to_entry_id: Uuid) -> Result<(), LedgerError> {
+    fn repoint_queue_row_matches(
+        &mut self,
+        from_queue_row_id: QueueRowId,
+        to_entry_id: EntryId,
+    ) -> Result<(), LedgerError> {
         self.conn.execute(
             "UPDATE import_queue_row_matches
              SET matched_queue_row_id = NULL, matched_entry_id = ?2
@@ -886,7 +1064,9 @@ impl LedgerStore for SqliteStore {
                 Ok(value)
             }
             Err(err) => {
-                let _ = self.conn.execute_batch("ROLLBACK TO SAVEPOINT ledger_txn; RELEASE SAVEPOINT ledger_txn");
+                let _ = self.conn.execute_batch(
+                    "ROLLBACK TO SAVEPOINT ledger_txn; RELEASE SAVEPOINT ledger_txn",
+                );
                 Err(err)
             }
         }
@@ -898,6 +1078,7 @@ mod tests {
     use super::*;
     use crate::entry::{BankState, Entry, EntryPart, EntrySource};
     use crate::error::LedgerError;
+    use crate::id::{AllocationId, EntryPartId, ValuationId};
     use crate::valuation::Valuation;
     use chrono::NaiveDate;
     use rust_decimal_macros::dec;
@@ -906,9 +1087,9 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()
     }
 
-    fn sample_entry(account_id: Uuid) -> Entry {
+    fn sample_entry(account_id: AccountId) -> Entry {
         Entry {
-            id: Uuid::new_v4(),
+            id: EntryId::generate(),
             account_id,
             date: a_date(),
             time: None,
@@ -941,7 +1122,9 @@ mod tests {
 
     #[test]
     fn incomplete_import_for_account_ignores_completed_and_other_accounts() {
-        contract::incomplete_import_for_account_ignores_completed_and_other_accounts(SqliteStore::open_in_memory().unwrap());
+        contract::incomplete_import_for_account_ignores_completed_and_other_accounts(
+            SqliteStore::open_in_memory().unwrap(),
+        );
     }
 
     #[test]
@@ -951,17 +1134,30 @@ mod tests {
 
     #[test]
     fn queue_rows_come_back_for_their_import_by_date_then_time() {
-        contract::queue_rows_come_back_for_their_import_by_date_then_time(SqliteStore::open_in_memory().unwrap());
+        contract::queue_rows_come_back_for_their_import_by_date_then_time(
+            SqliteStore::open_in_memory().unwrap(),
+        );
     }
 
     #[test]
     fn matches_referencing_a_row_come_from_either_side() {
-        contract::matches_referencing_a_row_come_from_either_side(SqliteStore::open_in_memory().unwrap());
+        contract::matches_referencing_a_row_come_from_either_side(
+            SqliteStore::open_in_memory().unwrap(),
+        );
+    }
+
+    #[test]
+    fn matches_for_an_import_are_those_of_its_own_rows() {
+        contract::matches_for_an_import_are_those_of_its_own_rows(
+            SqliteStore::open_in_memory().unwrap(),
+        );
     }
 
     #[test]
     fn repointing_rewrites_only_rows_that_pointed_at_the_queue_row() {
-        contract::repointing_rewrites_only_rows_that_pointed_at_the_queue_row(SqliteStore::open_in_memory().unwrap());
+        contract::repointing_rewrites_only_rows_that_pointed_at_the_queue_row(
+            SqliteStore::open_in_memory().unwrap(),
+        );
     }
 
     #[test]
@@ -970,17 +1166,18 @@ mod tests {
         // This test confirms the SQLite FK constraint also rejects a match
         // whose target entry does not exist.
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
         let import = contract::an_import(account.id);
         store.save_import(import.clone()).unwrap();
         let row = contract::a_row(import.id, 1, None);
         store.save_queue_row(row.clone()).unwrap();
-        let dangling = crate::import::ImportQueueRowMatch {
-            id: Uuid::new_v4(),
-            queue_row_id: row.id,
-            target: crate::import::MatchTarget::Entry { entry_id: Uuid::new_v4() },
-        };
+        let dangling = ImportQueueRowMatch::to_entry(row.id, EntryId::generate());
         assert!(store.save_queue_row_match(dangling).is_err());
     }
 
@@ -991,7 +1188,12 @@ mod tests {
         let row;
         {
             let mut store = SqliteStore::open(&path).unwrap();
-            let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+            let account = Account::new(
+                "Checking",
+                Currency::new("EUR").unwrap(),
+                AccountKind::Own,
+                dec!(0),
+            );
             store.save_account(account.clone()).unwrap();
             let import = contract::an_import(account.id);
             store.save_import(import.clone()).unwrap();
@@ -1032,7 +1234,10 @@ mod tests {
         );
         let id = account.id;
         store.save_account(account).unwrap();
-        assert_eq!(store.get_account(id).unwrap().unwrap().opening_balance, dec!(-1042.50));
+        assert_eq!(
+            store.get_account(id).unwrap().unwrap().opening_balance,
+            dec!(-1042.50)
+        );
     }
 
     #[test]
@@ -1055,7 +1260,12 @@ mod tests {
     #[test]
     fn an_entry_with_a_time_round_trips_exactly() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
         let mut entry = sample_entry(account.id);
         entry.time = Some(chrono::NaiveTime::from_hms_opt(14, 32, 7).unwrap());
@@ -1066,7 +1276,12 @@ mod tests {
     #[test]
     fn an_entry_with_a_time_including_fractional_seconds_round_trips_exactly() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
         let mut entry = sample_entry(account.id);
         entry.time = Some(chrono::NaiveTime::from_hms_milli_opt(14, 32, 7, 250).unwrap());
@@ -1077,10 +1292,15 @@ mod tests {
     #[test]
     fn saving_a_valuation_with_a_reused_id_returns_an_error_rather_than_silently_overwriting() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("An ETF position", Currency::new("EUR").unwrap(), AccountKind::Investment, dec!(1000));
+        let account = Account::new(
+            "An ETF position",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Investment,
+            dec!(1000),
+        );
         store.save_account(account.clone()).unwrap();
         let valuation = Valuation {
-            id: Uuid::new_v4(),
+            id: ValuationId::generate(),
             account_id: account.id,
             date: a_date(),
             old_value: dec!(1000),
@@ -1094,15 +1314,19 @@ mod tests {
     #[test]
     fn unknown_id_returns_none() {
         let store = SqliteStore::open_in_memory().unwrap();
-        assert_eq!(store.get_account(Uuid::new_v4()), Ok(None));
+        assert_eq!(store.get_account(AccountId::generate()), Ok(None));
     }
 
     #[test]
     fn all_accounts_lists_every_saved_account() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let eur = Currency::new("EUR").unwrap();
-        store.save_account(Account::new("A", eur.clone(), AccountKind::Own, dec!(0))).unwrap();
-        store.save_account(Account::new("B", eur, AccountKind::Investment, dec!(500))).unwrap();
+        store
+            .save_account(Account::new("A", eur.clone(), AccountKind::Own, dec!(0)))
+            .unwrap();
+        store
+            .save_account(Account::new("B", eur, AccountKind::Investment, dec!(500)))
+            .unwrap();
         assert_eq!(store.all_accounts().unwrap().len(), 2);
     }
 
@@ -1125,11 +1349,18 @@ mod tests {
     #[test]
     fn a_failed_transaction_rolls_back_everything_it_wrote() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         let account_id = account.id;
         let result = store.transaction(|store| -> Result<(), LedgerError> {
             store.save_account(account.clone())?;
-            Err(LedgerError::Storage("simulated mid-transaction failure".to_string()))
+            Err(LedgerError::Storage(
+                "simulated mid-transaction failure".to_string(),
+            ))
         });
         assert!(result.is_err());
         assert_eq!(store.get_account(account_id).unwrap(), None);
@@ -1138,7 +1369,12 @@ mod tests {
     #[test]
     fn a_successful_transaction_commits_every_write_it_made() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         let account_id = account.id;
         store
             .transaction(|store| store.save_account(account.clone()))
@@ -1163,7 +1399,14 @@ mod tests {
             store.save_account(account).unwrap();
         }
         let reopened = SqliteStore::open(&path).unwrap();
-        assert_eq!(reopened.get_account(account_id).unwrap().unwrap().opening_balance, dec!(250));
+        assert_eq!(
+            reopened
+                .get_account(account_id)
+                .unwrap()
+                .unwrap()
+                .opening_balance,
+            dec!(250)
+        );
     }
 
     #[test]
@@ -1177,7 +1420,12 @@ mod tests {
     #[test]
     fn a_saved_entry_round_trips_with_its_tags() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
         let entry = sample_entry(account.id);
         store.save_entry(entry.clone()).unwrap();
@@ -1192,7 +1440,12 @@ mod tests {
     #[test]
     fn saving_an_entry_with_a_duplicate_tag_deduplicates_rather_than_erroring() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
         let mut entry = sample_entry(account.id);
         entry.tags = vec!["food".to_string(), "food".to_string()];
@@ -1219,15 +1472,26 @@ mod tests {
     #[test]
     fn an_account_with_no_entries_returns_an_empty_list() {
         let store = SqliteStore::open_in_memory().unwrap();
-        assert_eq!(store.entries_for_account(Uuid::new_v4()).unwrap().len(), 0);
+        assert_eq!(
+            store
+                .entries_for_account(AccountId::generate())
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[test]
     fn entries_for_pot_returns_only_entries_tagged_to_that_pot() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
-        let pot_id = Uuid::new_v4();
+        let pot_id = PotId::generate();
         let mut tagged = sample_entry(account.id);
         tagged.pot_id = Some(pot_id);
         store.save_entry(tagged).unwrap();
@@ -1238,26 +1502,36 @@ mod tests {
     #[test]
     fn a_pot_with_no_tagged_entries_returns_an_empty_list() {
         let store = SqliteStore::open_in_memory().unwrap();
-        assert_eq!(store.entries_for_pot(Uuid::new_v4()).unwrap().len(), 0);
+        assert_eq!(store.entries_for_pot(PotId::generate()).unwrap().len(), 0);
     }
 
     #[test]
     fn resaving_an_entry_replaces_its_tags_rather_than_appending() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
         let mut entry = sample_entry(account.id);
         store.save_entry(entry.clone()).unwrap();
         entry.tags = vec!["only-this-one".to_string()];
         store.save_entry(entry.clone()).unwrap();
-        assert_eq!(store.get_entry(entry.id).unwrap().unwrap().tags, vec!["only-this-one".to_string()]);
+        assert_eq!(
+            store.get_entry(entry.id).unwrap().unwrap().tags,
+            vec!["only-this-one".to_string()]
+        );
     }
 
     #[test]
     fn a_full_ledger_balance_works_against_sqlite_storage() {
         let mut ledger = crate::ledger::Ledger::new(SqliteStore::open_in_memory().unwrap());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(100)).unwrap();
+        let account = ledger
+            .open_account("Checking", eur, AccountKind::Own, dec!(100))
+            .unwrap();
         ledger
             .record_manual_entry(account.id, a_date(), dec!(-20), "Groceries")
             .unwrap();
@@ -1267,20 +1541,25 @@ mod tests {
     #[test]
     fn saved_parts_can_be_read_back_for_their_entry() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
         let entry = sample_entry(account.id);
         store.save_entry(entry.clone()).unwrap();
         let parts = vec![
             EntryPart {
-                id: Uuid::new_v4(),
+                id: EntryPartId::generate(),
                 entry_id: entry.id,
                 amount: dec!(-15),
                 category: Some("Loan".to_string()),
                 transfer_account_id: None,
             },
             EntryPart {
-                id: Uuid::new_v4(),
+                id: EntryPartId::generate(),
                 entry_id: entry.id,
                 amount: dec!(-5),
                 category: Some("Gifts".to_string()),
@@ -1298,26 +1577,43 @@ mod tests {
     #[test]
     fn an_entry_with_no_parts_returns_an_empty_list() {
         let store = SqliteStore::open_in_memory().unwrap();
-        assert_eq!(store.parts_for_entry(Uuid::new_v4()).unwrap().len(), 0);
+        assert_eq!(store.parts_for_entry(EntryId::generate()).unwrap().len(), 0);
     }
 
     #[test]
     fn resaving_parts_replaces_the_old_set() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0));
+        let account = Account::new(
+            "Checking",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Own,
+            dec!(0),
+        );
         store.save_account(account.clone()).unwrap();
         let entry = sample_entry(account.id);
         store.save_entry(entry.clone()).unwrap();
         store
             .save_entry_parts(
                 entry.id,
-                vec![EntryPart { id: Uuid::new_v4(), entry_id: entry.id, amount: dec!(-20), category: None, transfer_account_id: None }],
+                vec![EntryPart {
+                    id: EntryPartId::generate(),
+                    entry_id: entry.id,
+                    amount: dec!(-20),
+                    category: None,
+                    transfer_account_id: None,
+                }],
             )
             .unwrap();
         store
             .save_entry_parts(
                 entry.id,
-                vec![EntryPart { id: Uuid::new_v4(), entry_id: entry.id, amount: dec!(-10), category: None, transfer_account_id: None }],
+                vec![EntryPart {
+                    id: EntryPartId::generate(),
+                    entry_id: entry.id,
+                    amount: dec!(-10),
+                    category: None,
+                    transfer_account_id: None,
+                }],
             )
             .unwrap();
         assert_eq!(store.parts_for_entry(entry.id).unwrap().len(), 1);
@@ -1327,10 +1623,17 @@ mod tests {
     fn splitting_a_stored_entry_works_through_the_ledger() {
         let mut ledger = crate::ledger::Ledger::new(SqliteStore::open_in_memory().unwrap());
         let eur = Currency::new("EUR").unwrap();
-        let account = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
-        let entry = ledger.record_manual_entry(account.id, a_date(), dec!(-20), "Mixed").unwrap();
+        let account = ledger
+            .open_account("Checking", eur, AccountKind::Own, dec!(0))
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(account.id, a_date(), dec!(-20), "Mixed")
+            .unwrap();
         let parts = ledger
-            .split_entry(entry.id, vec![(dec!(-15), Some("Loan".to_string())), (dec!(-5), None)])
+            .split_entry(
+                entry.id,
+                vec![(dec!(-15), Some("Loan".to_string())), (dec!(-5), None)],
+            )
             .unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(ledger.parts_for_entry(entry.id).unwrap().len(), 2);
@@ -1340,7 +1643,7 @@ mod tests {
     fn a_saved_pot_can_be_read_back() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let pot = Pot {
-            id: Uuid::new_v4(),
+            id: PotId::generate(),
             name: "Emergency fund".to_string(),
             currency: Currency::new("EUR").unwrap(),
             target: Some(dec!(2000)),
@@ -1354,7 +1657,7 @@ mod tests {
     fn a_pot_with_no_target_or_priority_round_trips_as_none() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let pot = Pot {
-            id: Uuid::new_v4(),
+            id: PotId::generate(),
             name: "Siblings".to_string(),
             currency: Currency::new("EUR").unwrap(),
             target: None,
@@ -1370,23 +1673,54 @@ mod tests {
     fn all_pots_lists_every_saved_pot() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let eur = Currency::new("EUR").unwrap();
-        store.save_pot(Pot { id: Uuid::new_v4(), name: "A".to_string(), currency: eur.clone(), target: None, priority: None }).unwrap();
-        store.save_pot(Pot { id: Uuid::new_v4(), name: "B".to_string(), currency: eur, target: None, priority: None }).unwrap();
+        store
+            .save_pot(Pot {
+                id: PotId::generate(),
+                name: "A".to_string(),
+                currency: eur.clone(),
+                target: None,
+                priority: None,
+            })
+            .unwrap();
+        store
+            .save_pot(Pot {
+                id: PotId::generate(),
+                name: "B".to_string(),
+                currency: eur,
+                target: None,
+                priority: None,
+            })
+            .unwrap();
         assert_eq!(store.all_pots().unwrap().len(), 2);
     }
 
     #[test]
     fn allocations_for_a_pot_with_none_is_empty() {
         let store = SqliteStore::open_in_memory().unwrap();
-        assert_eq!(store.allocations_for_pot(Uuid::new_v4()).unwrap().len(), 0);
+        assert_eq!(
+            store.allocations_for_pot(PotId::generate()).unwrap().len(),
+            0
+        );
     }
 
     #[test]
     fn saved_allocations_can_be_read_back_for_their_pot() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let pot = Pot { id: Uuid::new_v4(), name: "A".to_string(), currency: Currency::new("EUR").unwrap(), target: None, priority: None };
+        let pot = Pot {
+            id: PotId::generate(),
+            name: "A".to_string(),
+            currency: Currency::new("EUR").unwrap(),
+            target: None,
+            priority: None,
+        };
         store.save_pot(pot.clone()).unwrap();
-        let allocation = Allocation { id: Uuid::new_v4(), pot_id: pot.id, amount: dec!(100), date: a_date(), note: None };
+        let allocation = Allocation {
+            id: AllocationId::generate(),
+            pot_id: pot.id,
+            amount: dec!(100),
+            date: a_date(),
+            note: None,
+        };
         store.save_allocation(allocation.clone()).unwrap();
         assert_eq!(store.allocations_for_pot(pot.id), Ok(vec![allocation]));
     }
@@ -1395,8 +1729,12 @@ mod tests {
     fn allocating_and_general_savings_work_through_the_ledger_on_sqlite() {
         let mut ledger = crate::ledger::Ledger::new(SqliteStore::open_in_memory().unwrap());
         let eur = Currency::new("EUR").unwrap();
-        ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(100)).unwrap();
-        let pot = ledger.open_pot("Emergency fund", eur.clone(), None, None).unwrap();
+        ledger
+            .open_account("Checking", eur.clone(), AccountKind::Own, dec!(100))
+            .unwrap();
+        let pot = ledger
+            .open_pot("Emergency fund", eur.clone(), None, None)
+            .unwrap();
         ledger.allocate_to_pot(pot.id, dec!(100), a_date()).unwrap();
         assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(100)));
         assert_eq!(ledger.general_savings(&eur), Ok(dec!(0)));
@@ -1407,10 +1745,15 @@ mod tests {
     #[test]
     fn a_saved_valuation_can_be_read_back() {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let account = Account::new("An ETF position", Currency::new("EUR").unwrap(), AccountKind::Investment, dec!(1000));
+        let account = Account::new(
+            "An ETF position",
+            Currency::new("EUR").unwrap(),
+            AccountKind::Investment,
+            dec!(1000),
+        );
         store.save_account(account.clone()).unwrap();
         let valuation = Valuation {
-            id: Uuid::new_v4(),
+            id: ValuationId::generate(),
             account_id: account.id,
             date: a_date(),
             old_value: dec!(1000),
@@ -1418,21 +1761,34 @@ mod tests {
             category: "Investment gain".to_string(),
         };
         store.save_valuation(valuation.clone()).unwrap();
-        assert_eq!(store.valuations_for_account(account.id), Ok(vec![valuation]));
+        assert_eq!(
+            store.valuations_for_account(account.id),
+            Ok(vec![valuation])
+        );
     }
 
     #[test]
     fn an_account_with_no_valuations_returns_an_empty_list() {
         let store = SqliteStore::open_in_memory().unwrap();
-        assert_eq!(store.valuations_for_account(Uuid::new_v4()).unwrap().len(), 0);
+        assert_eq!(
+            store
+                .valuations_for_account(AccountId::generate())
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[test]
     fn updating_current_value_persists_through_sqlite() {
         let mut ledger = crate::ledger::Ledger::new(SqliteStore::open_in_memory().unwrap());
         let eur = Currency::new("EUR").unwrap();
-        let etf = ledger.open_account("An ETF position", eur, AccountKind::Investment, dec!(1000)).unwrap();
-        let valuation = ledger.update_current_value(etf.id, dec!(1042), "Investment gain", a_date()).unwrap();
+        let etf = ledger
+            .open_account("An ETF position", eur, AccountKind::Investment, dec!(1000))
+            .unwrap();
+        let valuation = ledger
+            .update_current_value(etf.id, dec!(1042), "Investment gain", a_date())
+            .unwrap();
         assert_eq!(valuation.gain(), dec!(42));
         assert_eq!(ledger.current_value(etf.id), Ok(dec!(1042)));
     }
@@ -1442,9 +1798,20 @@ mod tests {
         let mut ledger = crate::ledger::Ledger::new(SqliteStore::open_in_memory().unwrap());
         let eur = Currency::new("EUR").unwrap();
         let ngn = Currency::new("NGN").unwrap();
-        let a = ledger.open_account("A", eur, AccountKind::Own, dec!(200)).unwrap();
-        let b = ledger.open_account("B", ngn, AccountKind::Own, dec!(0)).unwrap();
-        ledger.transfer(a.id, b.id, a_date(), dec!(200), dec!(370000), "move").unwrap();
+        let a = ledger
+            .open_account("A", eur, AccountKind::Own, dec!(200))
+            .unwrap();
+        let b = ledger
+            .open_account("B", ngn, AccountKind::Own, dec!(0))
+            .unwrap();
+        ledger
+            .transfer(crate::transfer::Transfer::new(
+                crate::transfer::TransferLeg::new(a.id, dec!(200)),
+                crate::transfer::TransferLeg::new(b.id, dec!(370000)),
+                a_date(),
+                "move",
+            ))
+            .unwrap();
         assert_eq!(ledger.account_balance(a.id), Ok(dec!(0)));
         assert_eq!(ledger.account_balance(b.id), Ok(dec!(370000)));
     }

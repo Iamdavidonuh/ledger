@@ -55,7 +55,12 @@ mod tests {
     #[tokio::test]
     async fn health_returns_ok() {
         let response = app(test_state())
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -110,7 +115,12 @@ mod tests {
             .ledger
             .lock()
             .unwrap()
-            .open_pot("Emergency fund", ledger_core::Currency::new("EUR").unwrap(), None, None)
+            .open_pot(
+                "Emergency fund",
+                ledger_core::Currency::new("EUR").unwrap(),
+                None,
+                None,
+            )
             .unwrap()
             .id;
 
@@ -120,7 +130,9 @@ mod tests {
                     .method("POST")
                     .uri(format!("/pots/{pot}/allocations"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({"amount": "1000", "date": "2026-01-15"}).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({"amount": "1000", "date": "2026-01-15"}).to_string(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -133,7 +145,9 @@ mod tests {
                     .method("POST")
                     .uri(format!("/pots/{pot}/allocations"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({"amount": "0.01", "date": "2026-01-15"}).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({"amount": "0.01", "date": "2026-01-15"}).to_string(),
+                    ))
                     .unwrap(),
             )
             .await

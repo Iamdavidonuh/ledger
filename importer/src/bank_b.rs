@@ -48,11 +48,17 @@ fn pdftotext(bytes: &[u8]) -> Result<String, ImportError> {
     let _ = writer.join();
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ImportError::PdfToText(format!("pdftotext exited with {}: {}", output.status, stderr.trim())));
+        return Err(ImportError::PdfToText(format!(
+            "pdftotext exited with {}: {}",
+            output.status,
+            stderr.trim()
+        )));
     }
     let text = String::from_utf8_lossy(&output.stdout).into_owned();
     if text.trim().is_empty() {
-        return Err(ImportError::PdfToText("pdftotext produced no text".to_string()));
+        return Err(ImportError::PdfToText(
+            "pdftotext produced no text".to_string(),
+        ));
     }
     Ok(text)
 }
@@ -76,7 +82,9 @@ fn signed_amount(line: &str) -> Option<(Decimal, &str)> {
         (false, line.strip_prefix("+ ")?)
     };
     let (number, tail) = rest.split_once(' ').unwrap_or((rest, ""));
-    let digits_ok = number.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '.');
+    let digits_ok = number
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == ',' || c == '.');
     let (_, decimals) = number.rsplit_once('.')?;
     if !digits_ok || decimals.len() != 2 {
         return None;
@@ -98,7 +106,8 @@ fn split_date(day_month: &str, year: &str) -> Result<NaiveDate, ImportError> {
 }
 
 fn dotted_date(s: &str) -> Result<NaiveDate, ImportError> {
-    NaiveDate::parse_from_str(s, "%d.%m.%Y").map_err(|_| parse_error(format!("{s:?} is not a date")))
+    NaiveDate::parse_from_str(s, "%d.%m.%Y")
+        .map_err(|_| parse_error(format!("{s:?} is not a date")))
 }
 
 /// The balance on the line after `label`: "+ 1,250.00 EUR ...".
@@ -123,7 +132,10 @@ pub(crate) fn parse_text(text: &str) -> Result<ParseResult, ImportError> {
         .iter()
         .find_map(|l| l.strip_prefix(HEADER_PREFIX)?.split_once(" to "))
         .ok_or(ImportError::NotAStatement)?;
-    let date_range = DateRange { start: dotted_date(start.trim())?, end: dotted_date(end.trim())? };
+    let date_range = DateRange {
+        start: dotted_date(start.trim())?,
+        end: dotted_date(end.trim())?,
+    };
 
     let opening_at = lines
         .iter()
@@ -156,7 +168,9 @@ pub(crate) fn parse_text(text: &str) -> Result<ParseResult, ImportError> {
         }
         // Value date then booking date, each as "DD-MM-" and "YYYY".
         if i + 3 >= closing_at || !is_day_month(lines[i + 2]) {
-            return Err(parse_error(format!("a row of {amount} has no value and booking dates")));
+            return Err(parse_error(format!(
+                "a row of {amount} has no value and booking dates"
+            )));
         }
         let booking_date = split_date(lines[i + 2], lines[i + 3])?;
         i += 4;
@@ -165,10 +179,22 @@ pub(crate) fn parse_text(text: &str) -> Result<ParseResult, ImportError> {
             .filter(|part| !part.is_empty() && *part != REFERENCE_LABEL)
             .collect::<Vec<_>>()
             .join(" ");
-        rows.push(ParsedRow { date: booking_date, time: None, amount, description, bank_state: BankState::Completed });
+        rows.push(ParsedRow {
+            date: booking_date,
+            time: None,
+            amount,
+            description,
+            bank_state: BankState::Completed,
+        });
     }
 
-    Ok(ParseResult { date_range, rows, reverted_candidates: Vec::new(), opening_balance, closing_balance })
+    Ok(ParseResult {
+        date_range,
+        rows,
+        reverted_candidates: Vec::new(),
+        opening_balance,
+        closing_balance,
+    })
 }
 
 #[cfg(test)]
@@ -241,7 +267,13 @@ Please raise any objections without delay.
     }
 
     fn row(d: NaiveDate, amount: Decimal, description: &str) -> ParsedRow {
-        ParsedRow { date: d, time: None, amount, description: description.to_string(), bank_state: BankState::Completed }
+        ParsedRow {
+            date: d,
+            time: None,
+            amount,
+            description: description.to_string(),
+            bank_state: BankState::Completed,
+        }
     }
 
     #[test]
@@ -250,9 +282,17 @@ Please raise any objections without delay.
         assert_eq!(
             statement.rows,
             vec![
-                row(date(3, 3), dec!(-1000.00), "SEPA Überweisung an Sam Landlord"),
+                row(
+                    date(3, 3),
+                    dec!(-1000.00),
+                    "SEPA Überweisung an Sam Landlord"
+                ),
                 row(date(3, 5), dec!(-12.34), "Kartenzahlung"),
-                row(date(3, 25), dec!(2500.00), "SEPA Überweisung von Example Employer GmbH"),
+                row(
+                    date(3, 25),
+                    dec!(2500.00),
+                    "SEPA Überweisung von Example Employer GmbH"
+                ),
                 row(date(3, 31), dec!(-0.04), "Balance of settlement items"),
             ]
         );
@@ -262,7 +302,13 @@ Please raise any objections without delay.
     #[test]
     fn the_date_range_and_balances_come_from_the_statement_header_and_footer() {
         let statement = parse_text(STATEMENT).unwrap();
-        assert_eq!(statement.date_range, DateRange { start: date(3, 1), end: date(3, 31) });
+        assert_eq!(
+            statement.date_range,
+            DateRange {
+                start: date(3, 1),
+                end: date(3, 31)
+            }
+        );
         assert_eq!(statement.opening_balance, dec!(1250.00));
         assert_eq!(statement.closing_balance, dec!(2737.62));
     }
@@ -308,9 +354,15 @@ Balance of settlement items
     #[test]
     fn a_statement_missing_its_balances_or_row_dates_is_a_parse_error() {
         let no_opening = STATEMENT.replace("Previous balance as at 28.02.2026", "Something else");
-        assert!(matches!(parse_text(&no_opening), Err(ImportError::Parse(_))));
+        assert!(matches!(
+            parse_text(&no_opening),
+            Err(ImportError::Parse(_))
+        ));
         let no_closing = STATEMENT.replace("New balance", "Something else");
-        assert!(matches!(parse_text(&no_closing), Err(ImportError::Parse(_))));
+        assert!(matches!(
+            parse_text(&no_closing),
+            Err(ImportError::Parse(_))
+        ));
         let no_dates = STATEMENT.replace("31-03-\n2026\n31-03-\n2026\n", "");
         assert!(matches!(parse_text(&no_dates), Err(ImportError::Parse(_))));
     }

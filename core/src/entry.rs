@@ -1,7 +1,8 @@
+use crate::account::Account;
 use crate::currency::Currency;
+use crate::id::{AccountId, EntryId, EntryPartId, PotId};
 use chrono::{NaiveDate, NaiveTime};
 use rust_decimal::Decimal;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -20,8 +21,8 @@ pub enum BankState {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
-    pub id: Uuid,
-    pub account_id: Uuid,
+    pub id: EntryId,
+    pub account_id: AccountId,
     pub date: NaiveDate,
     pub time: Option<NaiveTime>,
     pub amount: Decimal,
@@ -30,12 +31,22 @@ pub struct Entry {
     pub note: Option<String>,
     pub category: Option<String>,
     pub tags: Vec<String>,
-    pub pot_id: Option<Uuid>,
-    pub transfer_account_id: Option<Uuid>,
+    pub pot_id: Option<PotId>,
+    pub transfer_account_id: Option<AccountId>,
     pub source: EntrySource,
     pub bank_state: BankState,
     pub confirmed: bool,
     pub voided_reason: Option<String>,
+}
+
+/// The parts of an entry that stay editable once it is saved, even on a
+/// locked imported entry. Updating replaces all four together.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryMetadata {
+    pub category: Option<String>,
+    pub tags: Vec<String>,
+    pub note: Option<String>,
+    pub pot_id: Option<PotId>,
 }
 
 impl Entry {
@@ -43,23 +54,22 @@ impl Entry {
         self.voided_reason.is_some()
     }
 
-    /// A manually recorded entry: Manual source, Completed bank state, no time,
-    /// no category, no tags, no pot, no transfer link, unconfirmed, not voided.
-    pub fn new_manual(
-        id: uuid::Uuid,
-        account_id: uuid::Uuid,
-        date: chrono::NaiveDate,
-        amount: rust_decimal::Decimal,
+    /// A manually recorded entry on `account`, in the account's own
+    /// currency: Manual source, Completed bank state, no time, no category,
+    /// no tags, no pot, no transfer link, unconfirmed, not voided.
+    pub fn manual(
+        account: &Account,
+        date: NaiveDate,
+        amount: Decimal,
         description: impl Into<String>,
-        currency: crate::currency::Currency,
     ) -> Self {
         Entry {
-            id,
-            account_id,
+            id: EntryId::generate(),
+            account_id: account.id,
             date,
             time: None,
             amount,
-            currency,
+            currency: account.currency.clone(),
             description: description.into(),
             note: None,
             category: None,
@@ -72,48 +82,15 @@ impl Entry {
             voided_reason: None,
         }
     }
-
-    /// An imported entry: Imported source, time/bank_state/category from caller.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_imported(
-        id: uuid::Uuid,
-        account_id: uuid::Uuid,
-        date: chrono::NaiveDate,
-        time: Option<chrono::NaiveTime>,
-        amount: rust_decimal::Decimal,
-        description: impl Into<String>,
-        currency: crate::currency::Currency,
-        bank_state: BankState,
-        category: Option<String>,
-    ) -> Self {
-        Entry {
-            id,
-            account_id,
-            date,
-            time,
-            amount,
-            currency,
-            description: description.into(),
-            note: None,
-            category,
-            tags: Vec::new(),
-            pot_id: None,
-            transfer_account_id: None,
-            source: EntrySource::Imported,
-            bank_state,
-            confirmed: false,
-            voided_reason: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EntryPart {
-    pub id: Uuid,
-    pub entry_id: Uuid,
+    pub id: EntryPartId,
+    pub entry_id: EntryId,
     pub amount: Decimal,
     pub category: Option<String>,
-    pub transfer_account_id: Option<Uuid>,
+    pub transfer_account_id: Option<AccountId>,
 }
 
 #[cfg(test)]
@@ -122,8 +99,8 @@ mod tests {
 
     fn sample_entry() -> Entry {
         Entry {
-            id: Uuid::new_v4(),
-            account_id: Uuid::new_v4(),
+            id: EntryId::generate(),
+            account_id: AccountId::generate(),
             date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             time: None,
             amount: Decimal::ZERO,

@@ -4,9 +4,8 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
-use ledger_core::{Currency, LedgerError, Pot};
+use ledger_core::{Currency, LedgerError, Pot, PotId};
 use rust_decimal::Decimal;
-use uuid::Uuid;
 
 #[derive(serde::Deserialize)]
 pub struct OpenPotRequest {
@@ -36,9 +35,14 @@ pub fn router() -> Router<AppState> {
         .route("/pots/:id/allocations", post(allocate))
 }
 
-async fn open_pot(State(state): State<AppState>, AppJson(req): AppJson<OpenPotRequest>) -> Result<Json<Pot>, AppError> {
+async fn open_pot(
+    State(state): State<AppState>,
+    AppJson(req): AppJson<OpenPotRequest>,
+) -> Result<Json<Pot>, AppError> {
     let pot = state
-        .with_ledger(move |ledger| ledger.open_pot(&req.name, req.currency, req.target, req.priority))
+        .with_ledger(move |ledger| {
+            ledger.open_pot(&req.name, req.currency, req.target, req.priority)
+        })
         .await?;
     Ok(Json(pot))
 }
@@ -46,16 +50,23 @@ async fn open_pot(State(state): State<AppState>, AppJson(req): AppJson<OpenPotRe
 async fn list_pots(State(state): State<AppState>) -> Result<Json<Vec<PotWithBalance>>, AppError> {
     let with_balances = state
         .with_ledger(|ledger| {
-            ledger.pots()?.into_iter().map(|pot| {
-                let balance = ledger.pot_balance(pot.id)?;
-                Ok(PotWithBalance { pot, balance })
-            }).collect::<Result<Vec<_>, _>>()
+            ledger
+                .pots()?
+                .into_iter()
+                .map(|pot| {
+                    let balance = ledger.pot_balance(pot.id)?;
+                    Ok(PotWithBalance { pot, balance })
+                })
+                .collect::<Result<Vec<_>, _>>()
         })
         .await?;
     Ok(Json(with_balances))
 }
 
-async fn get_pot(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<PotWithBalance>, AppError> {
+async fn get_pot(
+    State(state): State<AppState>,
+    Path(id): Path<PotId>,
+) -> Result<Json<PotWithBalance>, AppError> {
     let with_balance = state
         .with_ledger(move |ledger| {
             let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
@@ -68,7 +79,7 @@ async fn get_pot(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<
 
 async fn allocate(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<PotId>,
     Json(req): Json<AllocateRequest>,
 ) -> Result<Json<PotWithBalance>, AppError> {
     let with_balance = state

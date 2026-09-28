@@ -41,7 +41,8 @@ fn column(headers: &csv::StringRecord, name: &str) -> Result<usize, ImportError>
 }
 
 fn decimal(line: usize, name: &str, value: &str) -> Result<Decimal, ImportError> {
-    Decimal::from_str(value.trim()).map_err(|_| parse_error(line, format!("{name} {value:?} is not a number")))
+    Decimal::from_str(value.trim())
+        .map_err(|_| parse_error(line, format!("{name} {value:?} is not a number")))
 }
 
 fn datetime(line: usize, name: &str, value: &str) -> Result<NaiveDateTime, ImportError> {
@@ -50,7 +51,9 @@ fn datetime(line: usize, name: &str, value: &str) -> Result<NaiveDateTime, Impor
 }
 
 fn read_rows(bytes: &[u8]) -> Result<Vec<CsvRow>, ImportError> {
-    let mut reader = csv::ReaderBuilder::new().has_headers(true).from_reader(bytes);
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(bytes);
     let headers = reader
         .headers()
         .map_err(|e| ImportError::Parse(e.to_string()))?
@@ -102,14 +105,16 @@ fn read_rows(bytes: &[u8]) -> Result<Vec<CsvRow>, ImportError> {
 fn balances(rows: &[CsvRow]) -> Result<(Decimal, Decimal), ImportError> {
     let mut completed: Vec<(NaiveDateTime, &CsvRow)> = Vec::new();
     for row in rows.iter().filter(|r| r.state == BankAState::Completed) {
-        let at = row
-            .completed
-            .ok_or_else(|| ImportError::Parse("a COMPLETED row has no Completed Date".to_string()))?;
+        let at = row.completed.ok_or_else(|| {
+            ImportError::Parse("a COMPLETED row has no Completed Date".to_string())
+        })?;
         completed.push((at, row));
     }
     completed.sort_by_key(|(at, _)| *at);
     let (Some((_, first)), Some((_, last))) = (completed.first(), completed.last()) else {
-        return Err(ImportError::Parse("the file has no COMPLETED rows to check a balance against".to_string()));
+        return Err(ImportError::Parse(
+            "the file has no COMPLETED rows to check a balance against".to_string(),
+        ));
     };
     let missing = || ImportError::Parse("a COMPLETED row has no Balance".to_string());
     let opening = first.balance.ok_or_else(missing)? - first.amount + first.fee;
@@ -149,7 +154,13 @@ impl BankReader for BankA {
                     BankAState::Completed => BankState::Completed,
                     BankAState::Pending => BankState::Pending,
                 };
-                parsed.push(ParsedRow { date, time: Some(time), amount, description, bank_state });
+                parsed.push(ParsedRow {
+                    date,
+                    time: Some(time),
+                    amount,
+                    description,
+                    bank_state,
+                });
             }
         }
         Ok(ParseResult {
@@ -170,7 +181,8 @@ mod tests {
     use ledger_core::BankState;
     use rust_decimal_macros::dec;
 
-    const HEADER: &str = "Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\n";
+    const HEADER: &str =
+        "Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\n";
 
     fn csv(rows: &[&str]) -> Vec<u8> {
         let mut s = HEADER.to_string();
@@ -215,9 +227,18 @@ mod tests {
         ]);
         let rows = BankA.read(&bytes).unwrap().rows;
         assert_eq!(rows.len(), 2);
-        assert_eq!((rows[0].amount, rows[0].description.as_str()), (dec!(-28.00), "Book Shop"));
-        assert_eq!((rows[1].amount, rows[1].description.as_str()), (dec!(-0.30), "Fee on: Book Shop"));
-        assert_eq!((rows[1].date, rows[1].time, rows[1].bank_state), (rows[0].date, rows[0].time, rows[0].bank_state));
+        assert_eq!(
+            (rows[0].amount, rows[0].description.as_str()),
+            (dec!(-28.00), "Book Shop")
+        );
+        assert_eq!(
+            (rows[1].amount, rows[1].description.as_str()),
+            (dec!(-0.30), "Fee on: Book Shop")
+        );
+        assert_eq!(
+            (rows[1].date, rows[1].time, rows[1].bank_state),
+            (rows[0].date, rows[0].time, rows[0].bank_state)
+        );
     }
 
     #[test]
@@ -226,8 +247,17 @@ mod tests {
             "Charge,Current,2026-03-02 08:00:00,2026-03-02 08:00:01,Card Delivery Fee,0.00,5.99,EUR,COMPLETED,94.01",
         ]);
         let rows = BankA.read(&bytes).unwrap().rows;
-        let got: Vec<_> = rows.iter().map(|r| (r.amount, r.description.as_str())).collect();
-        assert_eq!(got, vec![(dec!(0.00), "Card Delivery Fee"), (dec!(-5.99), "Fee on: Card Delivery Fee")]);
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (r.amount, r.description.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (dec!(0.00), "Card Delivery Fee"),
+                (dec!(-5.99), "Fee on: Card Delivery Fee")
+            ]
+        );
     }
 
     #[test]
@@ -237,7 +267,12 @@ mod tests {
             "Card Refund,Current,2026-03-02 12:00:00,2026-03-02 12:00:01,Nothing,0.00,0.00,EUR,COMPLETED,99.00",
         ]);
         let rows = BankA.read(&bytes).unwrap().rows;
-        assert_eq!(rows.iter().map(|r| r.description.as_str()).collect::<Vec<_>>(), vec!["Real"]);
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.description.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Real"]
+        );
     }
 
     #[test]
@@ -248,7 +283,10 @@ mod tests {
         ]);
         let rows = BankA.read(&bytes).unwrap().rows;
         assert_eq!(rows[1].bank_state, BankState::Pending);
-        assert_eq!((rows[1].date, rows[1].time), (date(3, 3), Some(time(19, 0, 0))));
+        assert_eq!(
+            (rows[1].date, rows[1].time),
+            (date(3, 3), Some(time(19, 0, 0)))
+        );
     }
 
     #[test]
@@ -262,8 +300,16 @@ mod tests {
         assert_eq!(
             statement.reverted_candidates,
             vec![
-                RevertedCandidate { date: date(3, 4), time: time(12, 0, 0), amount: dec!(-4.20) },
-                RevertedCandidate { date: date(3, 4), time: time(12, 0, 0), amount: dec!(-0.10) },
+                RevertedCandidate {
+                    date: date(3, 4),
+                    time: time(12, 0, 0),
+                    amount: dec!(-4.20)
+                },
+                RevertedCandidate {
+                    date: date(3, 4),
+                    time: time(12, 0, 0),
+                    amount: dec!(-0.10)
+                },
             ]
         );
     }
@@ -298,16 +344,26 @@ mod tests {
 
     #[test]
     fn a_file_with_no_completed_rows_is_a_parse_error() {
-        let bytes = csv(&["Card Payment,Current,2026-03-02 12:00:00,,Pending,-1.00,0.00,EUR,PENDING,"]);
+        let bytes =
+            csv(&["Card Payment,Current,2026-03-02 12:00:00,,Pending,-1.00,0.00,EUR,PENDING,"]);
         assert!(matches!(BankA.read(&bytes), Err(ImportError::Parse(_))));
     }
 
     #[test]
     fn a_file_that_is_not_a_statement_csv_is_a_parse_error() {
-        assert!(matches!(BankA.read(b"%PDF-1.4 not a csv"), Err(ImportError::Parse(_))));
-        assert!(matches!(BankA.read(b"a,b\n1,2\n"), Err(ImportError::Parse(_))));
+        assert!(matches!(
+            BankA.read(b"%PDF-1.4 not a csv"),
+            Err(ImportError::Parse(_))
+        ));
+        assert!(matches!(
+            BankA.read(b"a,b\n1,2\n"),
+            Err(ImportError::Parse(_))
+        ));
         let bad_amount = csv(&["Card Payment,Current,2026-03-01 12:00:00,2026-03-01 12:00:01,X,abc,0.00,EUR,COMPLETED,1.00"]);
-        assert!(matches!(BankA.read(&bad_amount), Err(ImportError::Parse(_))));
+        assert!(matches!(
+            BankA.read(&bad_amount),
+            Err(ImportError::Parse(_))
+        ));
     }
 
     #[test]
@@ -357,7 +413,10 @@ mod tests {
         ]);
         assert_eq!(
             Importer::new(BankA).parse(&bad),
-            Err(ImportError::BalanceCheckFailed { expected: dec!(139.50), actual: dec!(133.51) })
+            Err(ImportError::BalanceCheckFailed {
+                expected: dec!(139.50),
+                actual: dec!(133.51)
+            })
         );
     }
 }

@@ -1,14 +1,14 @@
 use crate::currency::Currency;
-use uuid::Uuid;
+use crate::id::{AccountId, EntryId, ImportId, PotId, QueueRowId};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LedgerError {
     #[error("account {0} not found")]
-    AccountNotFound(Uuid),
+    AccountNotFound(AccountId),
     #[error("entry {0} not found")]
-    EntryNotFound(Uuid),
+    EntryNotFound(EntryId),
     #[error("pot {0} not found")]
-    PotNotFound(Uuid),
+    PotNotFound(PotId),
     #[error("cannot edit a locked field on this entry")]
     EntryLocked,
     #[error("entry is already voided")]
@@ -41,9 +41,9 @@ pub enum LedgerError {
     #[error("that action does not apply to this kind of queue row")]
     WrongQueueRowKind,
     #[error("import {0} not found")]
-    ImportNotFound(Uuid),
+    ImportNotFound(ImportId),
     #[error("queue row {0} not found")]
-    QueueRowNotFound(Uuid),
+    QueueRowNotFound(QueueRowId),
     #[error("storage error: {0}")]
     Storage(String),
 }

@@ -79,7 +79,10 @@ mod tests {
 
     #[test]
     fn rejects_a_code_that_is_too_short_or_too_long() {
-        assert!(matches!(Currency::new("E"), Err(CurrencyError::InvalidFormat(_))));
+        assert!(matches!(
+            Currency::new("E"),
+            Err(CurrencyError::InvalidFormat(_))
+        ));
         assert!(matches!(
             Currency::new("WAYTOOLONGCODE"),
             Err(CurrencyError::InvalidFormat(_))
@@ -88,7 +91,10 @@ mod tests {
 
     #[test]
     fn rejects_a_code_with_symbols() {
-        assert!(matches!(Currency::new("EU-R"), Err(CurrencyError::InvalidFormat(_))));
+        assert!(matches!(
+            Currency::new("EU-R"),
+            Err(CurrencyError::InvalidFormat(_))
+        ));
     }
 
     #[test]

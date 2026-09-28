@@ -1,6 +1,6 @@
 use crate::currency::Currency;
+use crate::id::AccountId;
 use rust_decimal::Decimal;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -13,7 +13,7 @@ pub enum AccountKind {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Account {
-    pub id: Uuid,
+    pub id: AccountId,
     pub name: String,
     pub currency: Currency,
     pub kind: AccountKind,
@@ -30,7 +30,7 @@ impl Account {
         opening_balance: Decimal,
     ) -> Self {
         Account {
-            id: Uuid::new_v4(),
+            id: AccountId::generate(),
             name: name.into(),
             currency,
             kind,

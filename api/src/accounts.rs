@@ -3,9 +3,8 @@ use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use ledger_core::{Account, AccountKind, Currency, LedgerError};
+use ledger_core::{Account, AccountId, AccountKind, Currency, LedgerError};
 use rust_decimal::Decimal;
-use uuid::Uuid;
 
 #[derive(serde::Deserialize)]
 pub struct CreateAccountRequest {
@@ -33,18 +32,26 @@ async fn create_account(
     AppJson(req): AppJson<CreateAccountRequest>,
 ) -> Result<Json<Account>, AppError> {
     let account = state
-        .with_ledger(move |ledger| ledger.open_account(&req.name, req.currency, req.kind, req.opening_balance))
+        .with_ledger(move |ledger| {
+            ledger.open_account(&req.name, req.currency, req.kind, req.opening_balance)
+        })
         .await?;
     Ok(Json(account))
 }
 
-async fn list_accounts(State(state): State<AppState>) -> Result<Json<Vec<AccountWithBalance>>, AppError> {
+async fn list_accounts(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AccountWithBalance>>, AppError> {
     let with_balances = state
         .with_ledger(|ledger| {
-            ledger.accounts()?.into_iter().map(|account| {
-                let balance = ledger.account_balance(account.id)?;
-                Ok(AccountWithBalance { account, balance })
-            }).collect::<Result<Vec<_>, _>>()
+            ledger
+                .accounts()?
+                .into_iter()
+                .map(|account| {
+                    let balance = ledger.account_balance(account.id)?;
+                    Ok(AccountWithBalance { account, balance })
+                })
+                .collect::<Result<Vec<_>, _>>()
         })
         .await?;
     Ok(Json(with_balances))
@@ -52,11 +59,13 @@ async fn list_accounts(State(state): State<AppState>) -> Result<Json<Vec<Account
 
 async fn get_account(
     State(state): State<AppState>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<AccountId>,
 ) -> Result<Json<AccountWithBalance>, AppError> {
     let with_balance = state
         .with_ledger(move |ledger| {
-            let account = ledger.account(id)?.ok_or(LedgerError::AccountNotFound(id))?;
+            let account = ledger
+                .account(id)?
+                .ok_or(LedgerError::AccountNotFound(id))?;
             let balance = ledger.account_balance(id)?;
             Ok(AccountWithBalance { account, balance })
         })
@@ -126,10 +135,20 @@ mod tests {
             .ledger
             .lock()
             .unwrap()
-            .open_account("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, rust_decimal_macros::dec!(50))
+            .open_account(
+                "Checking",
+                Currency::new("EUR").unwrap(),
+                AccountKind::Own,
+                rust_decimal_macros::dec!(50),
+            )
             .unwrap();
         let response = app(state)
-            .oneshot(Request::builder().uri("/accounts").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/accounts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -143,7 +162,7 @@ mod tests {
         let response = app(test_state())
             .oneshot(
                 Request::builder()
-                    .uri(format!("/accounts/{}", Uuid::new_v4()))
+                    .uri(format!("/accounts/{}", AccountId::generate()))
                     .body(Body::empty())
                     .unwrap(),
             )

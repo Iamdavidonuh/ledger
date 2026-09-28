@@ -2,19 +2,21 @@
 //! importer crate and matching via import_matching; every write goes
 //! through one Ledger method, which owns its own transaction.
 
-use crate::error::AppError;
-use crate::import_matching::build_queue;
+use crate::error::{AppError, AppJson};
+use crate::import_matching::{build_queue, new_import};
 use crate::state::AppState;
+use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use importer::{BankA, BankB, ImportError, Importer, ParseResult};
-use ledger_core::{Entry, Import, ImportQueueRow, LedgerError, QueueRowView};
-use std::collections::HashSet;
+use ledger_core::{
+    AccountId, Entry, Import, ImportId, ImportQueueRow, LedgerError, QueueRowId, QueueRowView,
+};
 use rust_decimal::Decimal;
-use uuid::Uuid;
+use std::str::FromStr;
 
 /// Axum's 2 MB default is too small for a full year's CSV export. This is
 /// a starting figure, to be confirmed against the deployment's memory limit.
@@ -26,15 +28,21 @@ enum BankType {
     BankB,
 }
 
-impl BankType {
-    fn parse(value: &str) -> Result<Self, AppError> {
+impl FromStr for BankType {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, AppError> {
         match value {
             "BankA" => Ok(BankType::BankA),
             "BankB" => Ok(BankType::BankB),
-            other => Err(AppError::bad_request(format!("bank_type must be BankA or BankB, not {other:?}"))),
+            other => Err(AppError::bad_request(format!(
+                "bank_type must be BankA or BankB, not {other:?}"
+            ))),
         }
     }
+}
 
+impl BankType {
     fn read(self, bytes: &[u8]) -> Result<ParseResult, ImportError> {
         match self {
             BankType::BankA => Importer::new(BankA).parse(bytes),
@@ -44,7 +52,7 @@ impl BankType {
 }
 
 struct Upload {
-    account_id: Uuid,
+    account_id: AccountId,
     bank_type: BankType,
     file_name: String,
     bytes: Vec<u8>,
@@ -58,10 +66,12 @@ async fn read_upload(mut multipart: Multipart) -> Result<Upload, AppError> {
             Some("account_id") => {
                 let text = field.text().await.map_err(bad)?;
                 account_id = Some(
-                    Uuid::parse_str(text.trim()).map_err(|_| AppError::bad_request("account_id must be a UUID"))?,
+                    text.trim()
+                        .parse::<AccountId>()
+                        .map_err(|_| AppError::bad_request("account_id must be a UUID"))?,
                 );
             }
-            Some("bank_type") => bank_type = Some(BankType::parse(field.text().await.map_err(bad)?.trim())?),
+            Some("bank_type") => bank_type = Some(field.text().await.map_err(bad)?.trim().parse()?),
             Some("file") => {
                 let file_name = field
                     .file_name()
@@ -76,12 +86,17 @@ async fn read_upload(mut multipart: Multipart) -> Result<Upload, AppError> {
     let account_id = account_id.ok_or_else(|| AppError::bad_request("account_id is required"))?;
     let bank_type = bank_type.ok_or_else(|| AppError::bad_request("bank_type is required"))?;
     let (file_name, bytes) = file.ok_or_else(|| AppError::bad_request("file is required"))?;
-    Ok(Upload { account_id, bank_type, file_name, bytes })
+    Ok(Upload {
+        account_id,
+        bank_type,
+        file_name,
+        bytes,
+    })
 }
 
 #[derive(serde::Serialize)]
 pub struct ImportResult {
-    pub import_id: Uuid,
+    pub import_id: ImportId,
     pub total_rows: usize,
     pub reverted_candidate_count: usize,
     pub suspicious_count: usize,
@@ -89,7 +104,7 @@ pub struct ImportResult {
 
 #[derive(serde::Serialize)]
 pub struct ImportSummary {
-    pub id: Uuid,
+    pub id: ImportId,
     pub file_name: String,
     pub uploaded_at: DateTime<Utc>,
     pub rows_read: i64,
@@ -103,7 +118,7 @@ pub struct AcceptRequest {
 
 #[derive(serde::Deserialize)]
 pub struct AcceptAsTransferRequest {
-    pub other_account_id: Uuid,
+    pub other_account_id: AccountId,
     pub other_amount: Option<Decimal>,
 }
 
@@ -132,20 +147,34 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route(
             "/imports",
-            post(upload).get(list_imports).layer(DefaultBodyLimit::max(UPLOAD_LIMIT_BYTES)),
+            post(upload)
+                .get(list_imports)
+                .layer(DefaultBodyLimit::max(UPLOAD_LIMIT_BYTES)),
         )
         .route("/imports/:id", get(get_import))
         .route("/imports/:id/queue", get(get_queue))
         .route("/imports/:id/queue/accept-all", post(accept_all))
         .route("/imports/:id/queue/discard-all", post(discard_all))
-        .route("/imports/:id/queue/:row_id", axum::routing::patch(set_category))
+        .route(
+            "/imports/:id/queue/:row_id",
+            axum::routing::patch(set_category),
+        )
         .route("/imports/:id/queue/:row_id/accept", post(accept))
-        .route("/imports/:id/queue/:row_id/accept-as-transfer", post(accept_as_transfer))
-        .route("/imports/:id/queue/:row_id/resolve-revert", post(resolve_revert))
+        .route(
+            "/imports/:id/queue/:row_id/accept-as-transfer",
+            post(accept_as_transfer),
+        )
+        .route(
+            "/imports/:id/queue/:row_id/resolve-revert",
+            post(resolve_revert),
+        )
         .route("/imports/:id/queue/:row_id/discard", post(discard))
 }
 
-async fn upload(State(state): State<AppState>, multipart: Multipart) -> Result<Json<ImportResult>, AppError> {
+async fn upload(
+    State(state): State<AppState>,
+    multipart: Multipart,
+) -> Result<Json<ImportResult>, AppError> {
     let upload = read_upload(multipart).await?;
     let account_id = upload.account_id;
 
@@ -153,7 +182,9 @@ async fn upload(State(state): State<AppState>, multipart: Multipart) -> Result<J
     // saving, since another upload could stage in between.
     let account = state
         .with_ledger(move |ledger| {
-            let account = ledger.account(account_id)?.ok_or(LedgerError::AccountNotFound(account_id))?;
+            let account = ledger
+                .account(account_id)?
+                .ok_or(LedgerError::AccountNotFound(account_id))?;
             if ledger.incomplete_import_for_account(account_id)?.is_some() {
                 return Err(LedgerError::IncompleteImportExists);
             }
@@ -171,30 +202,13 @@ async fn upload(State(state): State<AppState>, multipart: Multipart) -> Result<J
     let result = state
         .with_ledger(move |ledger| {
             let entries = ledger.entries(account_id)?;
-            let mut import = Import {
-                id: Uuid::new_v4(),
-                account_id,
-                currency: account.currency,
-                file_name,
-                uploaded_at: Utc::now(),
-                rows_read: 0,
-                opening_balance: parsed.opening_balance,
-                closing_balance: parsed.closing_balance,
-                completed: false,
-            };
+            let import = new_import(&account, file_name, &parsed);
             let staged = build_queue(&import, &parsed, &entries);
-            import.rows_read = staged.rows.len() as i64;
-            let matched_row_ids: HashSet<uuid::Uuid> =
-                staged.matches.iter().map(|m| m.queue_row_id).collect();
             let result = ImportResult {
                 import_id: import.id,
                 total_rows: staged.rows.len(),
                 reverted_candidate_count: parsed.reverted_candidates.len(),
-                suspicious_count: staged
-                    .rows
-                    .iter()
-                    .filter(|r| r.kind == ledger_core::QueueRowKind::Normal && matched_row_ids.contains(&r.id))
-                    .count(),
+                suspicious_count: staged.suspicious_count(),
             };
             ledger.stage_import(import, staged.rows, staged.matches)?;
             Ok(result)
@@ -219,63 +233,113 @@ async fn list_imports(State(state): State<AppState>) -> Result<Json<Vec<ImportSu
     ))
 }
 
-async fn get_import(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Import>, AppError> {
+async fn get_import(
+    State(state): State<AppState>,
+    Path(id): Path<ImportId>,
+) -> Result<Json<Import>, AppError> {
     let import = state
         .with_ledger(move |ledger| ledger.import(id)?.ok_or(LedgerError::ImportNotFound(id)))
         .await?;
     Ok(Json(import))
 }
 
-async fn get_queue(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Vec<QueueRowView>>, AppError> {
-    Ok(Json(state.with_ledger(move |ledger| ledger.import_queue(id)).await?))
+async fn get_queue(
+    State(state): State<AppState>,
+    Path(id): Path<ImportId>,
+) -> Result<Json<Vec<QueueRowView>>, AppError> {
+    Ok(Json(
+        state
+            .with_ledger(move |ledger| ledger.import_queue(id))
+            .await?,
+    ))
 }
 
-async fn accept_all(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Accepted>, AppError> {
-    let accepted = state.with_ledger(move |ledger| ledger.bulk_accept_import(id)).await?;
+async fn accept_all(
+    State(state): State<AppState>,
+    Path(id): Path<ImportId>,
+) -> Result<Json<Accepted>, AppError> {
+    let accepted = state
+        .with_ledger(move |ledger| ledger.bulk_accept_import(id))
+        .await?;
     Ok(Json(Accepted { accepted }))
 }
 
-async fn discard_all(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<Discarded>, AppError> {
-    let discarded = state.with_ledger(move |ledger| ledger.discard_import(id)).await?;
+async fn discard_all(
+    State(state): State<AppState>,
+    Path(id): Path<ImportId>,
+) -> Result<Json<Discarded>, AppError> {
+    let discarded = state
+        .with_ledger(move |ledger| ledger.discard_import(id))
+        .await?;
     Ok(Json(Discarded { discarded }))
 }
 
+/// The body is optional: an empty one means "no explicit category".
 async fn accept(
     State(state): State<AppState>,
-    Path((id, row_id)): Path<(Uuid, Uuid)>,
-    Json(req): Json<AcceptRequest>,
+    Path((id, row_id)): Path<(ImportId, QueueRowId)>,
+    body: Bytes,
 ) -> Result<Json<Entry>, AppError> {
-    Ok(Json(state.with_ledger(move |ledger| ledger.accept_queue_row(id, row_id, req.category)).await?))
+    let category = if body.is_empty() {
+        None
+    } else {
+        serde_json::from_slice::<AcceptRequest>(&body)
+            .map_err(|e| AppError::bad_request(e.to_string()))?
+            .category
+    };
+    Ok(Json(
+        state
+            .with_ledger(move |ledger| ledger.accept_queue_row(id, row_id, category))
+            .await?,
+    ))
 }
 
 async fn accept_as_transfer(
     State(state): State<AppState>,
-    Path((id, row_id)): Path<(Uuid, Uuid)>,
-    Json(req): Json<AcceptAsTransferRequest>,
+    Path((id, row_id)): Path<(ImportId, QueueRowId)>,
+    AppJson(req): AppJson<AcceptAsTransferRequest>,
 ) -> Result<Json<TransferResult>, AppError> {
     let (out_entry, in_entry) = state
-        .with_ledger(move |ledger| ledger.accept_queue_row_as_transfer(id, row_id, req.other_account_id, req.other_amount))
+        .with_ledger(move |ledger| {
+            ledger.accept_queue_row_as_transfer(id, row_id, req.other_account_id, req.other_amount)
+        })
         .await?;
-    Ok(Json(TransferResult { out_entry, in_entry }))
+    Ok(Json(TransferResult {
+        out_entry,
+        in_entry,
+    }))
 }
 
 async fn resolve_revert(
     State(state): State<AppState>,
-    Path((id, row_id)): Path<(Uuid, Uuid)>,
+    Path((id, row_id)): Path<(ImportId, QueueRowId)>,
 ) -> Result<Json<Entry>, AppError> {
-    Ok(Json(state.with_ledger(move |ledger| ledger.resolve_reverted_candidate(id, row_id)).await?))
+    Ok(Json(
+        state
+            .with_ledger(move |ledger| ledger.resolve_reverted_candidate(id, row_id))
+            .await?,
+    ))
 }
 
 async fn set_category(
     State(state): State<AppState>,
-    Path((id, row_id)): Path<(Uuid, Uuid)>,
-    Json(req): Json<SetCategoryRequest>,
+    Path((id, row_id)): Path<(ImportId, QueueRowId)>,
+    AppJson(req): AppJson<SetCategoryRequest>,
 ) -> Result<Json<ImportQueueRow>, AppError> {
-    Ok(Json(state.with_ledger(move |ledger| ledger.set_queue_row_category(id, row_id, req.category)).await?))
+    Ok(Json(
+        state
+            .with_ledger(move |ledger| ledger.set_queue_row_category(id, row_id, req.category))
+            .await?,
+    ))
 }
 
-async fn discard(State(state): State<AppState>, Path((id, row_id)): Path<(Uuid, Uuid)>) -> Result<StatusCode, AppError> {
-    state.with_ledger(move |ledger| ledger.discard_queue_row(id, row_id)).await?;
+async fn discard(
+    State(state): State<AppState>,
+    Path((id, row_id)): Path<(ImportId, QueueRowId)>,
+) -> Result<StatusCode, AppError> {
+    state
+        .with_ledger(move |ledger| ledger.discard_queue_row(id, row_id))
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -286,7 +350,10 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use ledger_core::{AccountKind, BankState, Currency, Entry, Import, ImportQueueRow, QueueRowKind, QueueRowView, SqliteStore};
+    use ledger_core::{
+        AccountKind, BankState, Currency, Entry, EntryId, Import, ImportQueueRow, QueueRowView,
+        RowReview, SqliteStore,
+    };
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use tower::ServiceExt;
@@ -296,22 +363,35 @@ mod tests {
     }
 
     fn fixture(name: &str) -> Vec<u8> {
-        std::fs::read(format!("{}/../importer/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+        std::fs::read(format!(
+            "{}/../importer/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
     }
 
-    fn an_account(state: &AppState, currency: &str, opening: Decimal) -> Uuid {
+    fn an_account(state: &AppState, currency: &str, opening: Decimal) -> AccountId {
         state
             .ledger
             .lock()
             .unwrap()
-            .open_account("Card", Currency::new(currency).unwrap(), AccountKind::Own, opening)
+            .open_account(
+                "Card",
+                Currency::new(currency).unwrap(),
+                AccountKind::Own,
+                opening,
+            )
             .unwrap()
             .id
     }
 
     const BOUNDARY: &str = "test-boundary-7MA4YWxkTrZu0gW";
 
-    fn multipart(account_id: Option<Uuid>, bank_type: Option<&str>, file: Option<(&str, Vec<u8>)>) -> Request<Body> {
+    fn multipart(
+        account_id: Option<AccountId>,
+        bank_type: Option<&str>,
+        file: Option<(&str, Vec<u8>)>,
+    ) -> Request<Body> {
         let mut body = Vec::new();
         let mut text = |name: &str, value: &str| {
             body.extend(format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").bytes());
@@ -336,7 +416,10 @@ mod tests {
         Request::builder()
             .method("POST")
             .uri("/imports")
-            .header("content-type", format!("multipart/form-data; boundary={BOUNDARY}"))
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
             .body(Body::from(body))
             .unwrap()
     }
@@ -345,12 +428,29 @@ mod tests {
         let response = app(state.clone()).oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let json = if bytes.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+        let json = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap()
+        };
         (status, json)
     }
 
-    async fn upload(state: &AppState, account_id: Uuid, bank_type: &str, file_name: &str) -> (StatusCode, serde_json::Value) {
-        send(state, multipart(Some(account_id), Some(bank_type), Some((file_name, fixture(file_name))))).await
+    async fn upload(
+        state: &AppState,
+        account_id: AccountId,
+        bank_type: &str,
+        file_name: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        send(
+            state,
+            multipart(
+                Some(account_id),
+                Some(bank_type),
+                Some((file_name, fixture(file_name))),
+            ),
+        )
+        .await
     }
 
     fn json_request(method: &str, uri: &str, body: serde_json::Value) -> Request<Body> {
@@ -380,8 +480,13 @@ mod tests {
         state.ledger.lock().unwrap().imports().unwrap().len()
     }
 
-    fn balance(state: &AppState, account_id: Uuid) -> Decimal {
-        state.ledger.lock().unwrap().account_balance(account_id).unwrap()
+    fn balance(state: &AppState, account_id: AccountId) -> Decimal {
+        state
+            .ledger
+            .lock()
+            .unwrap()
+            .account_balance(account_id)
+            .unwrap()
     }
 
     // ---- upload ----
@@ -398,18 +503,38 @@ mod tests {
         let id = import_id(&body);
         let rows = queue(&state, &id).await;
         assert_eq!(rows.len(), 9);
-        assert!(rows.windows(2).all(|w| (w[0].row.date, w[0].row.time) <= (w[1].row.date, w[1].row.time)));
-        let pending: Vec<&QueueRowView> = rows.iter().filter(|r| r.row.bank_state == BankState::Pending).collect();
+        assert!(rows
+            .windows(2)
+            .all(|w| (w[0].row.date, w[0].row.time) <= (w[1].row.date, w[1].row.time)));
+        let pending: Vec<&QueueRowView> = rows
+            .iter()
+            .filter(|r| {
+                r.row
+                    .normal()
+                    .is_some_and(|detail| detail.bank_state == BankState::Pending)
+            })
+            .collect();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].row.description, "Pending Cafe");
-        assert!(rows.iter().any(|r| r.row.description == "Radio licence, TV, extras"));
-        assert!(state.ledger.lock().unwrap().entries(account).unwrap().is_empty());
+        assert_eq!(description_of(&pending[0].row), "Pending Cafe");
+        assert!(rows
+            .iter()
+            .any(|r| description_of(&r.row) == "Radio licence, TV, extras"));
+        assert!(state
+            .ledger
+            .lock()
+            .unwrap()
+            .entries(account)
+            .unwrap()
+            .is_empty());
 
         let (status, record) = send(&state, get(&format!("/imports/{id}"))).await;
         assert_eq!(status, StatusCode::OK);
         let record: Import = serde_json::from_value(record).unwrap();
         assert_eq!(record.file_name, "bank_a_statement.csv");
-        assert_eq!((record.opening_balance, record.closing_balance), (dec!(150.00), dec!(311.35)));
+        assert_eq!(
+            (record.opening_balance, record.closing_balance),
+            (dec!(150.00), dec!(311.35))
+        );
         assert_eq!(record.currency, Currency::new("EUR").unwrap());
         assert!(!record.completed);
 
@@ -456,7 +581,15 @@ mod tests {
     async fn the_wrong_bank_type_for_a_file_just_fails_to_parse() {
         let state = test_state();
         let account = an_account(&state, "EUR", dec!(0));
-        let (status, _) = send(&state, multipart(Some(account), Some("BankA"), Some(("x.pdf", fixture("bank_b_statement.pdf"))))).await;
+        let (status, _) = send(
+            &state,
+            multipart(
+                Some(account),
+                Some("BankA"),
+                Some(("x.pdf", fixture("bank_b_statement.pdf"))),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(imports_saved(&state), 0);
     }
@@ -464,7 +597,13 @@ mod tests {
     #[tokio::test]
     async fn uploading_to_an_unknown_account_is_404() {
         let state = test_state();
-        let (status, _) = upload(&state, Uuid::new_v4(), "BankA", "bank_a_statement.csv").await;
+        let (status, _) = upload(
+            &state,
+            AccountId::generate(),
+            "BankA",
+            "bank_a_statement.csv",
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(imports_saved(&state), 0);
     }
@@ -474,10 +613,26 @@ mod tests {
         let state = test_state();
         let account = an_account(&state, "EUR", dec!(0));
         let file = || Some(("f.csv", fixture("bank_a_statement.csv")));
-        assert_eq!(send(&state, multipart(Some(account), Some("BankC"), file())).await.0, StatusCode::BAD_REQUEST);
-        assert_eq!(send(&state, multipart(None, Some("BankA"), file())).await.0, StatusCode::BAD_REQUEST);
-        assert_eq!(send(&state, multipart(Some(account), None, file())).await.0, StatusCode::BAD_REQUEST);
-        assert_eq!(send(&state, multipart(Some(account), Some("BankA"), None)).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            send(&state, multipart(Some(account), Some("BankC"), file()))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(&state, multipart(None, Some("BankA"), file())).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(&state, multipart(Some(account), None, file())).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(&state, multipart(Some(account), Some("BankA"), None))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
         assert_eq!(imports_saved(&state), 0);
     }
 
@@ -489,8 +644,15 @@ mod tests {
         let (status, _) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(imports_saved(&state), 1);
-        let (status, discarded) =
-            send(&state, json_request("POST", &format!("/imports/{}/queue/discard-all", import_id(&body)), serde_json::json!({}))).await;
+        let (status, discarded) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{}/queue/discard-all", import_id(&body)),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(discarded["discarded"], 9);
         let (status, _) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
@@ -503,7 +665,11 @@ mod tests {
         let account = an_account(&state, "EUR", dec!(0));
         let mut csv = fixture("bank_a_bad_balance.csv");
         csv.extend(vec![b'\n'; 3 * 1024 * 1024]);
-        let (status, _) = send(&state, multipart(Some(account), Some("BankA"), Some(("big.csv", csv)))).await;
+        let (status, _) = send(
+            &state,
+            multipart(Some(account), Some("BankA"), Some(("big.csv", csv))),
+        )
+        .await;
         // Parsed (and then refused on its balance), not refused on size.
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
@@ -511,23 +677,49 @@ mod tests {
     // ---- matching at upload ----
 
     /// An entry with no time, the way a manual entry is recorded.
-    fn an_untimed_entry(state: &AppState, account: Uuid, day: u32, amount: Decimal) -> Entry {
+    fn an_untimed_entry(state: &AppState, account: AccountId, day: u32, amount: Decimal) -> Entry {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 3, day).unwrap();
-        state.ledger.lock().unwrap().record_manual_entry(account, date, amount, "earlier").unwrap()
+        state
+            .ledger
+            .lock()
+            .unwrap()
+            .record_manual_entry(account, date, amount, "earlier")
+            .unwrap()
     }
 
     /// An entry with a time, which only an import produces: stages a
     /// one-row statement and accepts it, as an earlier upload would have.
-    async fn an_earlier_imported_entry(state: &AppState, account: Uuid, started: &str, amount: &str) -> Entry {
+    async fn an_earlier_imported_entry(
+        state: &AppState,
+        account: AccountId,
+        started: &str,
+        amount: &str,
+    ) -> Entry {
         let csv = format!(
             "Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\n\
              Card Payment,Current,{started},{started},Corner Bakery,{amount},0.00,EUR,COMPLETED,{amount}\n"
         );
-        let (status, body) = send(state, multipart(Some(account), Some("BankA"), Some(("earlier.csv", csv.into_bytes())))).await;
+        let (status, body) = send(
+            state,
+            multipart(
+                Some(account),
+                Some("BankA"),
+                Some(("earlier.csv", csv.into_bytes())),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let id = import_id(&body);
         let row = queue(state, &id).await.remove(0);
-        let (_, entry) = send(state, json_request("POST", &format!("/imports/{id}/queue/{}/accept", row.row.id), serde_json::json!({}))).await;
+        let (_, entry) = send(
+            state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{}/accept", row.row.id),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         serde_json::from_value(entry).unwrap()
     }
 
@@ -535,11 +727,12 @@ mod tests {
     async fn a_reverted_row_matching_a_timed_entry_is_suggested_not_applied() {
         let state = test_state();
         let account = an_account(&state, "EUR", dec!(0));
-        let earlier = an_earlier_imported_entry(&state, account, "2026-03-04 12:00:00", "-4.20").await;
+        let earlier =
+            an_earlier_imported_entry(&state, account, "2026-03-04 12:00:00", "-4.20").await;
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         let rows = queue(&state, &import_id(&body)).await;
-        let candidate = rows.iter().find(|r| r.row.kind == QueueRowKind::RevertedCandidate).unwrap();
-        assert_eq!(candidate.suggested_entry_id, Some(earlier.id));
+        let candidate = the_reverted_candidate(&rows);
+        assert_eq!(suggested_entry_id(candidate), Some(earlier.id));
         let still = state.ledger.lock().unwrap().entries(account).unwrap();
         assert_eq!(still[0].bank_state, BankState::Completed);
     }
@@ -552,11 +745,19 @@ mod tests {
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(body["reverted_candidate_count"], 1);
         let rows = queue(&state, &import_id(&body)).await;
-        let candidate = rows.iter().find(|r| r.row.kind == QueueRowKind::RevertedCandidate).unwrap();
-        assert_eq!(candidate.suggested_entry_id, None);
+        let candidate = the_reverted_candidate(&rows);
+        assert_eq!(suggested_entry_id(candidate), None);
         let (status, _) = send(
             &state,
-            json_request("POST", &format!("/imports/{}/queue/{}/resolve-revert", import_id(&body), candidate.row.id), serde_json::json!({})),
+            json_request(
+                "POST",
+                &format!(
+                    "/imports/{}/queue/{}/resolve-revert",
+                    import_id(&body),
+                    candidate.row.id
+                ),
+                serde_json::json!({}),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
@@ -570,11 +771,32 @@ mod tests {
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(body["suspicious_count"], 1);
         let rows = queue(&state, &import_id(&body)).await;
-        let flagged: Vec<&QueueRowView> = rows.iter().filter(|r| r.suspicious).collect();
+        let flagged: Vec<&QueueRowView> = rows
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.review,
+                    RowReview::Normal {
+                        suspicious: true,
+                        ..
+                    }
+                )
+            })
+            .collect();
         assert_eq!(flagged.len(), 1);
-        assert_eq!(flagged[0].matched_entry_ids, vec![earlier.id]);
-        let (status, blocked) =
-            send(&state, json_request("POST", &format!("/imports/{}/queue/accept-all", import_id(&body)), serde_json::json!({}))).await;
+        assert!(matches!(
+            &flagged[0].review,
+            RowReview::Normal { matched_entry_ids, .. } if *matched_entry_ids == vec![earlier.id]
+        ));
+        let (status, blocked) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{}/queue/accept-all", import_id(&body)),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(blocked["suspicious_count"], 1);
         assert_eq!(blocked["reverted_candidate_count"], 1);
@@ -590,12 +812,14 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["suspicious_count"], 0);
         let rows = queue(&state, &import_id(&body)).await;
-        assert!(rows.iter().all(|r| r.row.currency == Currency::new("NGN").unwrap()));
+        assert!(rows
+            .iter()
+            .all(|r| r.row.currency == Currency::new("NGN").unwrap()));
     }
 
     // ---- review actions ----
 
-    async fn staged_bank_a(state: &AppState) -> (Uuid, String, Vec<QueueRowView>) {
+    async fn staged_bank_a(state: &AppState) -> (AccountId, String, Vec<QueueRowView>) {
         let account = an_account(state, "EUR", dec!(150));
         let (_, body) = upload(state, account, "BankA", "bank_a_statement.csv").await;
         let id = import_id(&body);
@@ -603,8 +827,30 @@ mod tests {
         (account, id, rows)
     }
 
+    fn description_of(row: &ImportQueueRow) -> &str {
+        row.normal()
+            .map_or("", |detail| detail.description.as_str())
+    }
+
+    fn category_of(row: &ImportQueueRow) -> Option<String> {
+        row.normal().and_then(|detail| detail.category.clone())
+    }
+
     fn row_described<'a>(rows: &'a [QueueRowView], description: &str) -> &'a QueueRowView {
-        rows.iter().find(|r| r.row.description == description).unwrap()
+        rows.iter()
+            .find(|r| description_of(&r.row) == description)
+            .unwrap()
+    }
+
+    fn the_reverted_candidate(rows: &[QueueRowView]) -> &QueueRowView {
+        rows.iter().find(|r| r.row.is_reverted_candidate()).unwrap()
+    }
+
+    fn suggested_entry_id(view: &QueueRowView) -> Option<EntryId> {
+        match view.review {
+            RowReview::RevertedCandidate { suggested_entry_id } => suggested_entry_id,
+            RowReview::Normal { .. } => None,
+        }
     }
 
     #[tokio::test]
@@ -614,7 +860,11 @@ mod tests {
         let row = row_described(&rows, "Night Kiosk");
         let (status, entry) = send(
             &state,
-            json_request("POST", &format!("/imports/{id}/queue/{}/accept", row.row.id), serde_json::json!({"category": "Snacks"})),
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{}/accept", row.row.id),
+                serde_json::json!({"category": "Snacks"}),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -625,18 +875,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepting_with_an_empty_body_is_allowed_and_a_malformed_body_is_400() {
+        let state = test_state();
+        let (_, id, rows) = staged_bank_a(&state).await;
+        let accept = |row: &QueueRowView, body: &'static str| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/imports/{id}/queue/{}/accept", row.row.id))
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let (status, _) = send(&state, accept(row_described(&rows, "Night Kiosk"), "")).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(
+            &state,
+            accept(row_described(&rows, "Corner Bakery"), "{not json"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(queue(&state, &id).await.len(), 8);
+    }
+
+    #[tokio::test]
     async fn a_patched_category_persists_and_is_used_on_accept() {
         let state = test_state();
         let (_, id, rows) = staged_bank_a(&state).await;
         let row = row_described(&rows, "Corner Bakery");
-        let (status, patched) =
-            send(&state, json_request("PATCH", &format!("/imports/{id}/queue/{}", row.row.id), serde_json::json!({"category": "Food"}))).await;
+        let (status, patched) = send(
+            &state,
+            json_request(
+                "PATCH",
+                &format!("/imports/{id}/queue/{}", row.row.id),
+                serde_json::json!({"category": "Food"}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         let patched: ImportQueueRow = serde_json::from_value(patched).unwrap();
-        assert_eq!(patched.category, Some("Food".to_string()));
-        assert_eq!(row_described(&queue(&state, &id).await, "Corner Bakery").row.category, Some("Food".to_string()));
-        let (_, entry) =
-            send(&state, json_request("POST", &format!("/imports/{id}/queue/{}/accept", row.row.id), serde_json::json!({}))).await;
+        assert_eq!(category_of(&patched), Some("Food".to_string()));
+        assert_eq!(
+            category_of(&row_described(&queue(&state, &id).await, "Corner Bakery").row),
+            Some("Food".to_string())
+        );
+        let (_, entry) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{}/accept", row.row.id),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         assert_eq!(entry["category"], "Food");
     }
 
@@ -646,11 +935,35 @@ mod tests {
         let (_, id, _) = staged_bank_a(&state).await;
         let (_, _, other_rows) = staged_bank_a(&state).await;
         let foreign = other_rows[0].row.id;
-        let (status, _) = send(&state, json_request("PATCH", &format!("/imports/{id}/queue/{foreign}"), serde_json::json!({"category": "x"}))).await;
+        let (status, _) = send(
+            &state,
+            json_request(
+                "PATCH",
+                &format!("/imports/{id}/queue/{foreign}"),
+                serde_json::json!({"category": "x"}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, _) = send(&state, json_request("PATCH", &format!("/imports/{id}/queue/{}", Uuid::new_v4()), serde_json::json!({"category": "x"}))).await;
+        let (status, _) = send(
+            &state,
+            json_request(
+                "PATCH",
+                &format!("/imports/{id}/queue/{}", QueueRowId::generate()),
+                serde_json::json!({"category": "x"}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, _) = send(&state, json_request("POST", &format!("/imports/{id}/queue/{foreign}/accept"), serde_json::json!({}))).await;
+        let (status, _) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{foreign}/accept"),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -658,16 +971,36 @@ mod tests {
     async fn actions_on_the_wrong_kind_of_row_are_409() {
         let state = test_state();
         let (_, id, rows) = staged_bank_a(&state).await;
-        let candidate = rows.iter().find(|r| r.row.kind == QueueRowKind::RevertedCandidate).unwrap().row.id;
+        let candidate = the_reverted_candidate(&rows).row.id;
         let normal = row_described(&rows, "Night Kiosk").row.id;
         let other = an_account(&state, "EUR", dec!(0));
         for (method, uri, body) in [
-            ("POST", format!("/imports/{id}/queue/{candidate}/accept"), serde_json::json!({})),
-            ("POST", format!("/imports/{id}/queue/{candidate}/accept-as-transfer"), serde_json::json!({"other_account_id": other})),
-            ("PATCH", format!("/imports/{id}/queue/{candidate}"), serde_json::json!({"category": "x"})),
-            ("POST", format!("/imports/{id}/queue/{normal}/resolve-revert"), serde_json::json!({})),
+            (
+                "POST",
+                format!("/imports/{id}/queue/{candidate}/accept"),
+                serde_json::json!({}),
+            ),
+            (
+                "POST",
+                format!("/imports/{id}/queue/{candidate}/accept-as-transfer"),
+                serde_json::json!({"other_account_id": other}),
+            ),
+            (
+                "PATCH",
+                format!("/imports/{id}/queue/{candidate}"),
+                serde_json::json!({"category": "x"}),
+            ),
+            (
+                "POST",
+                format!("/imports/{id}/queue/{normal}/resolve-revert"),
+                serde_json::json!({}),
+            ),
         ] {
-            assert_eq!(send(&state, json_request(method, &uri, body)).await.0, StatusCode::CONFLICT, "{method} {uri}");
+            assert_eq!(
+                send(&state, json_request(method, &uri, body)).await.0,
+                StatusCode::CONFLICT,
+                "{method} {uri}"
+            );
         }
     }
 
@@ -679,19 +1012,32 @@ mod tests {
         let row = row_described(&rows, "Payment from Jane Example").row.id;
         let (status, body) = send(
             &state,
-            json_request("POST", &format!("/imports/{id}/queue/{row}/accept-as-transfer"), serde_json::json!({"other_account_id": savings})),
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{row}/accept-as-transfer"),
+                serde_json::json!({"other_account_id": savings}),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         let out_entry: Entry = serde_json::from_value(body["out_entry"].clone()).unwrap();
         let in_entry: Entry = serde_json::from_value(body["in_entry"].clone()).unwrap();
-        assert_eq!((out_entry.account_id, out_entry.amount), (savings, dec!(-200.00)));
-        assert_eq!((in_entry.account_id, in_entry.amount), (account, dec!(200.00)));
+        assert_eq!(
+            (out_entry.account_id, out_entry.amount),
+            (savings, dec!(-200.00))
+        );
+        assert_eq!(
+            (in_entry.account_id, in_entry.amount),
+            (account, dec!(200.00))
+        );
         let (status, _) = send(
             &state,
             json_request(
                 "POST",
-                &format!("/imports/{id}/queue/{}/accept-as-transfer", row_described(&rows, "Night Kiosk").row.id),
+                &format!(
+                    "/imports/{id}/queue/{}/accept-as-transfer",
+                    row_described(&rows, "Night Kiosk").row.id
+                ),
                 serde_json::json!({"other_account_id": account}),
             ),
         )
@@ -701,8 +1047,11 @@ mod tests {
             &state,
             json_request(
                 "POST",
-                &format!("/imports/{id}/queue/{}/accept-as-transfer", row_described(&rows, "Night Kiosk").row.id),
-                serde_json::json!({"other_account_id": Uuid::new_v4()}),
+                &format!(
+                    "/imports/{id}/queue/{}/accept-as-transfer",
+                    row_described(&rows, "Night Kiosk").row.id
+                ),
+                serde_json::json!({"other_account_id": AccountId::generate()}),
             ),
         )
         .await;
@@ -713,22 +1062,46 @@ mod tests {
     async fn discarding_a_row_removes_it_without_an_entry() {
         let state = test_state();
         let (account, id, rows) = staged_bank_a(&state).await;
-        let (status, _) =
-            send(&state, json_request("POST", &format!("/imports/{id}/queue/{}/discard", rows[0].row.id), serde_json::json!({}))).await;
+        let (status, _) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{}/discard", rows[0].row.id),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert_eq!(queue(&state, &id).await.len(), 8);
-        assert!(state.ledger.lock().unwrap().entries(account).unwrap().is_empty());
+        assert!(state
+            .ledger
+            .lock()
+            .unwrap()
+            .entries(account)
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
     async fn discard_all_on_an_unknown_import_is_404() {
         let state = test_state();
-        let (status, _) =
-            send(&state, json_request("POST", &format!("/imports/{}/queue/discard-all", Uuid::new_v4()), serde_json::json!({}))).await;
+        let (status, _) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{}/queue/discard-all", ImportId::generate()),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, _) = send(&state, get(&format!("/imports/{}", Uuid::new_v4()))).await;
+        let (status, _) = send(&state, get(&format!("/imports/{}", ImportId::generate()))).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, _) = send(&state, get(&format!("/imports/{}/queue", Uuid::new_v4()))).await;
+        let (status, _) = send(
+            &state,
+            get(&format!("/imports/{}/queue", ImportId::generate())),
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -759,9 +1132,25 @@ mod tests {
         let (_, body) = upload(&state, card, "BankA", "bank_a_statement.csv").await;
         let id = import_id(&body);
         // The one reverted row has nothing to revert: discard it, then bulk accept.
-        let candidate = queue(&state, &id).await.into_iter().find(|r| r.row.kind == QueueRowKind::RevertedCandidate).unwrap();
-        send(&state, json_request("POST", &format!("/imports/{id}/queue/{}/discard", candidate.row.id), serde_json::json!({}))).await;
-        let (status, accepted) = send(&state, json_request("POST", &format!("/imports/{id}/queue/accept-all"), serde_json::json!({}))).await;
+        let candidate = the_reverted_candidate(&queue(&state, &id).await).clone();
+        send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{}/discard", candidate.row.id),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
+        let (status, accepted) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/accept-all"),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(accepted["accepted"], 8);
         // The statement's closing balance, plus the one still-pending row.
@@ -769,11 +1158,23 @@ mod tests {
 
         let (_, body) = upload(&state, current, "BankB", "bank_b_statement.pdf").await;
         let id = import_id(&body);
-        let (_, accepted) = send(&state, json_request("POST", &format!("/imports/{id}/queue/accept-all"), serde_json::json!({}))).await;
+        let (_, accepted) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/accept-all"),
+                serde_json::json!({}),
+            ),
+        )
+        .await;
         assert_eq!(accepted["accepted"], 4);
         assert_eq!(balance(&state, current), dec!(2737.62));
 
         let (_, list) = send(&state, get("/imports")).await;
-        assert!(list.as_array().unwrap().iter().all(|i| i["completed"] == true));
+        assert!(list
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["completed"] == true));
     }
 }
