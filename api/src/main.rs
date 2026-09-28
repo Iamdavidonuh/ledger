@@ -3,6 +3,8 @@
 mod accounts;
 mod entries;
 mod error;
+mod import_matching;
+mod imports;
 mod pots;
 mod state;
 mod transfers;
@@ -22,6 +24,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", axum::routing::get(health))
         .merge(accounts::router())
         .merge(entries::router())
+        .merge(imports::router())
         .merge(pots::router())
         .merge(transfers::router())
         .merge(valuations::router())
