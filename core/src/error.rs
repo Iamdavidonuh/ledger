@@ -27,6 +27,8 @@ pub enum LedgerError {
     TransferAmountMustBePositive,
     #[error("an entry can only be tagged to a pot in the same currency")]
     PotCurrencyMismatch,
+    #[error("a transfer needs two different accounts")]
+    TransferToSelfNotAllowed,
     #[error("storage error: {0}")]
     Storage(String),
 }

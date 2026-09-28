@@ -116,8 +116,11 @@ impl<S: LedgerStore> Ledger<S> {
         // If this entry is tagged to a pot, changing its amount changes
         // that pot's balance too (pot_balance sums tagged entries directly),
         // so it needs the same never-below-zero check allocate_to_pot and
-        // update_entry_metadata already apply.
-        if let Some(pot_id) = entry.pot_id {
+        // update_entry_metadata already apply. A Reverted entry is not
+        // counted in any pot's balance before or after the edit, so there
+        // is nothing to check.
+        let counts_toward_pots = entry.bank_state != BankState::Reverted;
+        if let (Some(pot_id), true) = (entry.pot_id, counts_toward_pots) {
             let would_be = self.pot_balance(pot_id)? - entry.amount + new_amount;
             if would_be < Decimal::ZERO {
                 return Err(LedgerError::PotWouldGoNegative);
@@ -152,8 +155,12 @@ impl<S: LedgerStore> Ledger<S> {
         if entry.is_voided() {
             return Err(LedgerError::AlreadyVoided);
         }
+        // A Reverted entry is excluded from pot_balance whatever its pot_id
+        // says, so moving it between pots changes no pot's balance: only the
+        // floor comparisons are skipped, the pot and currency checks still run.
+        let counts_toward_pots = entry.bank_state != BankState::Reverted;
         if pot_id != entry.pot_id {
-            if let Some(old_pot) = entry.pot_id {
+            if let (Some(old_pot), true) = (entry.pot_id, counts_toward_pots) {
                 let would_be = self.pot_balance(old_pot)? - entry.amount;
                 if would_be < Decimal::ZERO {
                     return Err(LedgerError::PotWouldGoNegative);
@@ -167,9 +174,11 @@ impl<S: LedgerStore> Ledger<S> {
                 if entry.currency != pot.currency {
                     return Err(LedgerError::PotCurrencyMismatch);
                 }
-                let would_be = self.pot_balance(new_pot)? + entry.amount;
-                if would_be < Decimal::ZERO {
-                    return Err(LedgerError::PotWouldGoNegative);
+                if counts_toward_pots {
+                    let would_be = self.pot_balance(new_pot)? + entry.amount;
+                    if would_be < Decimal::ZERO {
+                        return Err(LedgerError::PotWouldGoNegative);
+                    }
                 }
             }
         }
@@ -206,8 +215,10 @@ impl<S: LedgerStore> Ledger<S> {
             return Err(LedgerError::VoidReasonRequired);
         }
         // Voiding drops this entry out of entries_tagged_to_pot, so it needs
-        // the same never-below-zero check every other pot-affecting write applies.
-        if let Some(pot_id) = entry.pot_id {
+        // the same never-below-zero check every other pot-affecting write
+        // applies, unless it is Reverted and so already out of the pot.
+        let counts_toward_pots = entry.bank_state != BankState::Reverted;
+        if let (Some(pot_id), true) = (entry.pot_id, counts_toward_pots) {
             let would_be = self.pot_balance(pot_id)? - entry.amount;
             if would_be < Decimal::ZERO {
                 return Err(LedgerError::PotWouldGoNegative);
@@ -357,7 +368,6 @@ impl<S: LedgerStore> Ledger<S> {
         Ok(allocation)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn transfer(
         &mut self,
         from_account: Uuid,
@@ -367,6 +377,30 @@ impl<S: LedgerStore> Ledger<S> {
         amount_received: Decimal,
         description: &str,
     ) -> Result<(Entry, Entry), LedgerError> {
+        let (out_entry, in_entry) =
+            self.build_transfer(from_account, to_account, date, amount_sent, amount_received, description)?;
+        self.store.transaction(|store| {
+            store.save_entry(out_entry.clone())?;
+            store.save_entry(in_entry.clone())
+        })?;
+        Ok((out_entry, in_entry))
+    }
+
+    /// Validates a transfer and builds its two entries without saving
+    /// either, so a caller can save them inside its own transaction
+    /// (`transfer` itself, or accepting an import queue row as a transfer).
+    fn build_transfer(
+        &self,
+        from_account: Uuid,
+        to_account: Uuid,
+        date: NaiveDate,
+        amount_sent: Decimal,
+        amount_received: Decimal,
+        description: &str,
+    ) -> Result<(Entry, Entry), LedgerError> {
+        if from_account == to_account {
+            return Err(LedgerError::TransferToSelfNotAllowed);
+        }
         if amount_sent <= Decimal::ZERO || amount_received <= Decimal::ZERO {
             return Err(LedgerError::TransferAmountMustBePositive);
         }
@@ -420,10 +454,6 @@ impl<S: LedgerStore> Ledger<S> {
             confirmed: false,
             voided_reason: None,
         };
-        self.store.transaction(|store| {
-            store.save_entry(out_entry.clone())?;
-            store.save_entry(in_entry.clone())
-        })?;
         Ok((out_entry, in_entry))
     }
 
@@ -646,6 +676,127 @@ mod tests {
         ledger
             .update_entry_metadata(expense.id, None, Vec::new(), None, Some(pot.id))
             .unwrap();
+        assert_eq!(
+            ledger.void_entry(income.id, "wrong account"),
+            Err(LedgerError::PotWouldGoNegative)
+        );
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+    }
+
+    /// Marks an entry Reverted directly in the store, the state
+    /// resolve_reverted_candidate would leave it in.
+    fn mark_reverted<S: LedgerStore>(ledger: &mut Ledger<S>, entry_id: Uuid) {
+        let mut entry = ledger.store.get_entry(entry_id).unwrap().unwrap();
+        entry.bank_state = BankState::Reverted;
+        ledger.store.save_entry(entry).unwrap();
+    }
+
+    /// A pot holding 20: +50 income and -30 expense, both tagged to it.
+    fn a_pot_holding_twenty<S: LedgerStore>(ledger: &mut Ledger<S>) -> (Account, Pot, Entry) {
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000)).unwrap();
+        let pot = ledger.open_pot("Camera", eur, None, None).unwrap();
+        let income = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(50), "Sold something")
+            .unwrap();
+        ledger
+            .update_entry_metadata(income.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        let expense = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-30), "Camera strap")
+            .unwrap();
+        ledger
+            .update_entry_metadata(expense.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        (checking, pot, income)
+    }
+
+    #[test]
+    fn voiding_a_reverted_pot_tagged_entry_does_not_count_it_against_the_pot_again() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let (checking, pot, _) = a_pot_holding_twenty(&mut ledger);
+        let big_income = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(100), "Refund")
+            .unwrap();
+        ledger
+            .update_entry_metadata(big_income.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        mark_reverted(&mut ledger, big_income.id);
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+        // 20 - 100 would be negative, but the reverted +100 is already out of the pot.
+        ledger.void_entry(big_income.id, "bank reversed it").unwrap();
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+    }
+
+    #[test]
+    fn editing_the_amount_of_a_reverted_pot_tagged_entry_does_not_count_it_against_the_pot() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let (checking, pot, _) = a_pot_holding_twenty(&mut ledger);
+        let expense = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-10), "Lens cap")
+            .unwrap();
+        ledger
+            .update_entry_metadata(expense.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        mark_reverted(&mut ledger, expense.id);
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+        // 20 - (-10) + (-500) would be negative, but a reverted entry never counts.
+        ledger.edit_manual_entry_amount(expense.id, dec!(-500)).unwrap();
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+    }
+
+    #[test]
+    fn moving_a_reverted_entry_onto_or_off_a_pot_skips_the_floor_check() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let (checking, pot, _) = a_pot_holding_twenty(&mut ledger);
+        let big_expense = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-900), "Camera shop")
+            .unwrap();
+        mark_reverted(&mut ledger, big_expense.id);
+        ledger
+            .update_entry_metadata(big_expense.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+
+        let big_income = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(100), "Refund")
+            .unwrap();
+        ledger
+            .update_entry_metadata(big_income.id, None, Vec::new(), None, Some(pot.id))
+            .unwrap();
+        mark_reverted(&mut ledger, big_income.id);
+        ledger
+            .update_entry_metadata(big_income.id, None, Vec::new(), None, None)
+            .unwrap();
+        assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(20)));
+    }
+
+    #[test]
+    fn a_reverted_entry_still_cannot_be_tagged_to_a_missing_or_other_currency_pot() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let usd = Currency::new("USD").unwrap();
+        let checking = ledger.open_account("Checking", eur, AccountKind::Own, dec!(0)).unwrap();
+        let usd_pot = ledger.open_pot("Trip", usd, None, None).unwrap();
+        let entry = ledger
+            .record_manual_entry(checking.id, a_date(), dec!(-10), "x")
+            .unwrap();
+        mark_reverted(&mut ledger, entry.id);
+        assert_eq!(
+            ledger.update_entry_metadata(entry.id, None, Vec::new(), None, Some(usd_pot.id)),
+            Err(LedgerError::PotCurrencyMismatch)
+        );
+        let missing = Uuid::new_v4();
+        assert_eq!(
+            ledger.update_entry_metadata(entry.id, None, Vec::new(), None, Some(missing)),
+            Err(LedgerError::PotNotFound(missing))
+        );
+    }
+
+    #[test]
+    fn a_completed_entry_is_still_floor_checked_on_void() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let (_, pot, income) = a_pot_holding_twenty(&mut ledger);
         assert_eq!(
             ledger.void_entry(income.id, "wrong account"),
             Err(LedgerError::PotWouldGoNegative)
@@ -1005,6 +1156,16 @@ mod tests {
         let b = ledger.open_account("B", eur, AccountKind::Own, dec!(0)).unwrap();
         let result = ledger.transfer(a.id, b.id, a_date(), dec!(0), dec!(0), "move");
         assert_eq!(result, Err(LedgerError::TransferAmountMustBePositive));
+    }
+
+    #[test]
+    fn a_transfer_from_an_account_to_itself_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let a = ledger.open_account("A", eur, AccountKind::Own, dec!(100)).unwrap();
+        let result = ledger.transfer(a.id, a.id, a_date(), dec!(40), dec!(40), "move");
+        assert_eq!(result, Err(LedgerError::TransferToSelfNotAllowed));
+        assert!(ledger.entries(a.id).unwrap().is_empty());
     }
 
     #[test]
