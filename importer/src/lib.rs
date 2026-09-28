@@ -39,18 +39,9 @@ pub struct RevertedCandidate {
     pub amount: Decimal,
 }
 
-/// What a `BankReader` extracts from a file, before the balance check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Statement {
-    pub date_range: DateRange,
-    pub rows: Vec<ParsedRow>,
-    pub reverted_candidates: Vec<RevertedCandidate>,
-    pub opening_balance: Decimal,
-    pub closing_balance: Decimal,
-}
-
-/// A statement that passed its balance check. There is no failed or
-/// partial ParseResult: a file that fails is an `ImportError` instead.
+/// What `BankReader::read` returns: the raw parsed data from the file.
+/// `Importer::parse` wraps it, runs the balance check on top, and returns
+/// the same type once it passes — there is no partial or pre-check variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseResult {
     pub date_range: DateRange,
@@ -73,7 +64,7 @@ pub enum ImportError {
 }
 
 pub trait BankReader {
-    fn read(&self, bytes: &[u8]) -> Result<Statement, ImportError>;
+    fn read(&self, bytes: &[u8]) -> Result<ParseResult, ImportError>;
 }
 
 pub struct Importer<T: BankReader> {
@@ -90,24 +81,18 @@ impl<T: BankReader> Importer<T> {
     /// candidates are not part of the bank's own arithmetic, so they are
     /// left out of the sum.
     pub fn parse(&self, bytes: &[u8]) -> Result<ParseResult, ImportError> {
-        let statement = self.reader.read(bytes)?;
-        let completed: Decimal = statement
+        let parsed = self.reader.read(bytes)?;
+        let completed: Decimal = parsed
             .rows
             .iter()
             .filter(|r| r.bank_state == BankState::Completed)
             .map(|r| r.amount)
             .sum();
-        let actual = statement.opening_balance + completed;
-        if actual != statement.closing_balance {
-            return Err(ImportError::BalanceCheckFailed { expected: statement.closing_balance, actual });
+        let actual = parsed.opening_balance + completed;
+        if actual != parsed.closing_balance {
+            return Err(ImportError::BalanceCheckFailed { expected: parsed.closing_balance, actual });
         }
-        Ok(ParseResult {
-            date_range: statement.date_range,
-            rows: statement.rows,
-            reverted_candidates: statement.reverted_candidates,
-            opening_balance: statement.opening_balance,
-            closing_balance: statement.closing_balance,
-        })
+        Ok(parsed)
     }
 }
 
@@ -118,10 +103,10 @@ mod tests {
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
-    struct Stub(Result<Statement, ImportError>);
+    struct Stub(Result<ParseResult, ImportError>);
 
     impl BankReader for Stub {
-        fn read(&self, _bytes: &[u8]) -> Result<Statement, ImportError> {
+        fn read(&self, _bytes: &[u8]) -> Result<ParseResult, ImportError> {
             self.0.clone()
         }
     }
@@ -136,9 +121,9 @@ mod tests {
         }
     }
 
-    fn statement(rows: Vec<ParsedRow>, opening: Decimal, closing: Decimal) -> Statement {
+    fn statement(rows: Vec<ParsedRow>, opening: Decimal, closing: Decimal) -> ParseResult {
         let d = NaiveDate::from_ymd_opt(2026, 3, 1).unwrap();
-        Statement {
+        ParseResult {
             date_range: DateRange { start: d, end: d },
             rows,
             reverted_candidates: vec![RevertedCandidate {

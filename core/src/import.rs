@@ -42,14 +42,23 @@ pub struct ImportQueueRow {
     pub category: Option<String>,
 }
 
+/// What a queue row match points at: either an existing ledger entry (a
+/// suspicious match or a revert suggestion) or another queue row (a
+/// suspicious pending-sibling pair). Exactly one is always set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MatchTarget {
+    Entry { entry_id: Uuid },
+    QueueRow { queue_row_id: Uuid },
+}
+
 /// For a Normal row: "suspicious, resembles this". For a RevertedCandidate
-/// row: "suggested entry to revert". Exactly one of the two targets is set.
+/// row: "suggested entry to revert".
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImportQueueRowMatch {
     pub id: Uuid,
     pub queue_row_id: Uuid,
-    pub matched_entry_id: Option<Uuid>,
-    pub matched_queue_row_id: Option<Uuid>,
+    pub target: MatchTarget,
 }
 
 /// A queue row as the review screen reads it: the row itself, what it

@@ -2,7 +2,7 @@
 //! Description,Amount,Fee,Currency,State,Balance` columns. Every rule about
 //! this format lives here.
 
-use crate::{BankReader, DateRange, ImportError, ParsedRow, RevertedCandidate, Statement};
+use crate::{BankReader, DateRange, ImportError, ParseResult, ParsedRow, RevertedCandidate};
 use chrono::{NaiveDate, NaiveDateTime};
 use ledger_core::BankState;
 use rust_decimal::Decimal;
@@ -118,7 +118,7 @@ fn balances(rows: &[CsvRow]) -> Result<(Decimal, Decimal), ImportError> {
 }
 
 impl BankReader for BankA {
-    fn read(&self, bytes: &[u8]) -> Result<Statement, ImportError> {
+    fn read(&self, bytes: &[u8]) -> Result<ParseResult, ImportError> {
         let rows = read_rows(bytes)?;
         let (opening_balance, closing_balance) = balances(&rows)?;
         let start = rows.iter().map(|r| r.started.date()).min();
@@ -152,7 +152,7 @@ impl BankReader for BankA {
                 parsed.push(ParsedRow { date, time: Some(time), amount, description, bank_state });
             }
         }
-        Ok(Statement {
+        Ok(ParseResult {
             date_range: DateRange { start, end },
             rows: parsed,
             reverted_candidates,

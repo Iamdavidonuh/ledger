@@ -15,7 +15,7 @@ pub use account::{Account, AccountKind};
 pub use currency::{Currency, CurrencyError};
 pub use entry::{BankState, Entry, EntryPart, EntrySource};
 pub use error::LedgerError;
-pub use import::{Import, ImportQueueRow, ImportQueueRowMatch, QueueRowKind, QueueRowView};
+pub use import::{Import, ImportQueueRow, ImportQueueRowMatch, MatchTarget, QueueRowKind, QueueRowView};
 pub use ledger::Ledger;
 pub use pot::{Allocation, Pot};
 pub use sqlite_store::{SqliteStore, SqliteStoreError};

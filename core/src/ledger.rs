@@ -43,24 +43,7 @@ impl<S: LedgerStore> Ledger<S> {
             .store
             .get_account(account_id)?
             .ok_or(LedgerError::AccountNotFound(account_id))?;
-        let entry = Entry {
-            id: Uuid::new_v4(),
-            account_id,
-            date,
-            time: None,
-            amount,
-            currency: account.currency,
-            description: description.to_string(),
-            note: None,
-            category: None,
-            tags: Vec::new(),
-            pot_id: None,
-            transfer_account_id: None,
-            source: EntrySource::Manual,
-            bank_state: BankState::Completed,
-            confirmed: false,
-            voided_reason: None,
-        };
+        let entry = Entry::new_manual(Uuid::new_v4(), account_id, date, amount, description, account.currency);
         self.store.save_entry(entry.clone())?;
         Ok(entry)
     }
@@ -315,23 +298,19 @@ impl<S: LedgerStore> Ledger<S> {
     }
 
     fn own_accounts_total(&self, currency: &Currency) -> Result<Decimal, LedgerError> {
-        let mut total = Decimal::ZERO;
-        for account in self.store.all_accounts()? {
-            if account.kind == AccountKind::Own && &account.currency == currency {
-                total += self.account_balance(account.id)?;
-            }
-        }
-        Ok(total)
+        self.store
+            .all_accounts()?
+            .into_iter()
+            .filter(|a| a.kind == AccountKind::Own && &a.currency == currency)
+            .try_fold(Decimal::ZERO, |acc, a| Ok(acc + self.account_balance(a.id)?))
     }
 
     fn pots_total(&self, currency: &Currency) -> Result<Decimal, LedgerError> {
-        let mut total = Decimal::ZERO;
-        for pot in self.store.all_pots()? {
-            if &pot.currency == currency {
-                total += self.pot_balance(pot.id)?;
-            }
-        }
-        Ok(total)
+        self.store
+            .all_pots()?
+            .into_iter()
+            .filter(|p| &p.currency == currency)
+            .try_fold(Decimal::ZERO, |acc, p| Ok(acc + self.pot_balance(p.id)?))
     }
 
     pub fn general_savings(&self, currency: &Currency) -> Result<Decimal, LedgerError> {
@@ -388,6 +367,22 @@ impl<S: LedgerStore> Ledger<S> {
         Ok((out_entry, in_entry))
     }
 
+    fn validate_transfer_amounts(
+        from_currency: &Currency,
+        to_currency: &Currency,
+        amount_sent: Decimal,
+        amount_received: Decimal,
+    ) -> Result<(), LedgerError> {
+        if amount_sent <= Decimal::ZERO || amount_received <= Decimal::ZERO {
+            return Err(LedgerError::TransferAmountMustBePositive);
+        }
+        let cross_currency = from_currency != to_currency;
+        if cross_currency == (amount_received == amount_sent) {
+            return Err(LedgerError::CrossCurrencyAmountRequired);
+        }
+        Ok(())
+    }
+
     /// Validates a transfer and builds its two entries without saving
     /// either, so a caller can save them inside its own transaction
     /// (`transfer` itself, or accepting an import queue row as a transfer).
@@ -403,9 +398,6 @@ impl<S: LedgerStore> Ledger<S> {
         if from_account == to_account {
             return Err(LedgerError::TransferToSelfNotAllowed);
         }
-        if amount_sent <= Decimal::ZERO || amount_received <= Decimal::ZERO {
-            return Err(LedgerError::TransferAmountMustBePositive);
-        }
         let from = self
             .store
             .get_account(from_account)?
@@ -414,60 +406,17 @@ impl<S: LedgerStore> Ledger<S> {
             .store
             .get_account(to_account)?
             .ok_or(LedgerError::AccountNotFound(to_account))?;
-        if from.currency != to.currency && amount_received == amount_sent {
-            return Err(LedgerError::CrossCurrencyAmountRequired);
-        }
-        if from.currency == to.currency && amount_received != amount_sent {
-            return Err(LedgerError::CrossCurrencyAmountRequired);
-        }
-        let out_entry = Entry {
-            id: Uuid::new_v4(),
-            account_id: from_account,
-            date,
-            time: None,
-            amount: -amount_sent,
-            currency: from.currency,
-            description: description.to_string(),
-            note: None,
-            category: None,
-            tags: Vec::new(),
-            pot_id: None,
-            transfer_account_id: Some(to_account),
-            source: EntrySource::Manual,
-            bank_state: BankState::Completed,
-            confirmed: false,
-            voided_reason: None,
-        };
-        let in_entry = Entry {
-            id: Uuid::new_v4(),
-            account_id: to_account,
-            date,
-            time: None,
-            amount: amount_received,
-            currency: to.currency,
-            description: description.to_string(),
-            note: None,
-            category: None,
-            tags: Vec::new(),
-            pot_id: None,
-            transfer_account_id: Some(from_account),
-            source: EntrySource::Manual,
-            bank_state: BankState::Completed,
-            confirmed: false,
-            voided_reason: None,
-        };
+        Self::validate_transfer_amounts(&from.currency, &to.currency, amount_sent, amount_received)?;
+        let mut out_entry = Entry::new_manual(Uuid::new_v4(), from_account, date, -amount_sent, description, from.currency);
+        out_entry.transfer_account_id = Some(to_account);
+        let mut in_entry = Entry::new_manual(Uuid::new_v4(), to_account, date, amount_received, description, to.currency);
+        in_entry.transfer_account_id = Some(from_account);
         Ok((out_entry, in_entry))
     }
 
     pub fn current_value(&self, account_id: Uuid) -> Result<Decimal, LedgerError> {
-        let account = self
-            .store
-            .get_account(account_id)?
-            .ok_or(LedgerError::AccountNotFound(account_id))?;
-        match account.current_value {
-            Some(v) => Ok(v),
-            None => self.account_balance(account_id),
-        }
+        let account = self.store.get_account(account_id)?.ok_or(LedgerError::AccountNotFound(account_id))?;
+        account.current_value.map(Ok).unwrap_or_else(|| self.account_balance(account_id))
     }
 
     pub fn update_current_value(

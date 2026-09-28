@@ -1,3 +1,4 @@
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -12,6 +13,7 @@ use serde_json::json;
 /// hits a genuine internal failure (the mutex was poisoned by an earlier
 /// panic) via `AppError::internal`. Nothing in this crate panics or
 /// `.expect()`s on a request; every failure path returns a response.
+#[derive(Debug)]
 pub enum AppError {
     BadRequest(String),
     Internal(String),
@@ -42,6 +44,21 @@ impl From<ImportError> for AppError {
         AppError::Import(e)
     }
 }
+
+impl From<JsonRejection> for AppError {
+    fn from(e: JsonRejection) -> Self {
+        AppError::BadRequest(e.body_text())
+    }}
+
+/// A JSON extractor that maps deserialization failures to `AppError::BadRequest`
+/// (400) rather than Axum's default 422, so an invalid currency code or other
+/// malformed field value returns the same status as any other bad input.
+///
+/// Use this in place of `axum::Json` for any handler that accepts a request
+/// body whose types perform validation in `Deserialize`.
+#[derive(axum::extract::FromRequest)]
+#[from_request(via(Json), rejection(AppError))]
+pub struct AppJson<T>(pub T);
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {

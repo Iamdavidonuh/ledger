@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use crate::error::{AppError, AppJson};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
@@ -10,7 +10,7 @@ use uuid::Uuid;
 #[derive(serde::Deserialize)]
 pub struct CreateAccountRequest {
     pub name: String,
-    pub currency: String,
+    pub currency: Currency,
     pub kind: AccountKind,
     pub opening_balance: Decimal,
 }
@@ -30,11 +30,10 @@ pub fn router() -> Router<AppState> {
 
 async fn create_account(
     State(state): State<AppState>,
-    Json(req): Json<CreateAccountRequest>,
+    AppJson(req): AppJson<CreateAccountRequest>,
 ) -> Result<Json<Account>, AppError> {
-    let currency = Currency::new(&req.currency).map_err(|e| AppError::bad_request(e.to_string()))?;
     let account = state
-        .with_ledger(move |ledger| ledger.open_account(&req.name, currency, req.kind, req.opening_balance))
+        .with_ledger(move |ledger| ledger.open_account(&req.name, req.currency, req.kind, req.opening_balance))
         .await?;
     Ok(Json(account))
 }
@@ -42,12 +41,10 @@ async fn create_account(
 async fn list_accounts(State(state): State<AppState>) -> Result<Json<Vec<AccountWithBalance>>, AppError> {
     let with_balances = state
         .with_ledger(|ledger| {
-            let mut with_balances = Vec::new();
-            for account in ledger.accounts()? {
+            ledger.accounts()?.into_iter().map(|account| {
                 let balance = ledger.account_balance(account.id)?;
-                with_balances.push(AccountWithBalance { account, balance });
-            }
-            Ok(with_balances)
+                Ok(AccountWithBalance { account, balance })
+            }).collect::<Result<Vec<_>, _>>()
         })
         .await?;
     Ok(Json(with_balances))

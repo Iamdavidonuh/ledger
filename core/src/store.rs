@@ -228,10 +228,14 @@ impl LedgerStore for InMemoryStore {
     }
 
     fn queue_row_matches_referencing(&self, queue_row_id: Uuid) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
+        use crate::import::MatchTarget;
         Ok(self
             .queue_row_matches
             .values()
-            .filter(|m| m.queue_row_id == queue_row_id || m.matched_queue_row_id == Some(queue_row_id))
+            .filter(|m| {
+                m.queue_row_id == queue_row_id
+                    || matches!(m.target, MatchTarget::QueueRow { queue_row_id: id } if id == queue_row_id)
+            })
             .cloned()
             .collect())
     }
@@ -242,10 +246,10 @@ impl LedgerStore for InMemoryStore {
     }
 
     fn repoint_queue_row_matches(&mut self, from_queue_row_id: Uuid, to_entry_id: Uuid) -> Result<(), LedgerError> {
+        use crate::import::MatchTarget;
         for m in self.queue_row_matches.values_mut() {
-            if m.matched_queue_row_id == Some(from_queue_row_id) {
-                m.matched_queue_row_id = None;
-                m.matched_entry_id = Some(to_entry_id);
+            if matches!(m.target, MatchTarget::QueueRow { queue_row_id: id } if id == from_queue_row_id) {
+                m.target = MatchTarget::Entry { entry_id: to_entry_id };
             }
         }
         Ok(())
@@ -424,13 +428,14 @@ pub(crate) mod import_contract {
         }
     }
 
-    fn a_match(queue_row_id: Uuid, entry: Option<Uuid>, row: Option<Uuid>) -> ImportQueueRowMatch {
-        ImportQueueRowMatch {
-            id: Uuid::new_v4(),
-            queue_row_id,
-            matched_entry_id: entry,
-            matched_queue_row_id: row,
-        }
+    fn a_match_to_entry(queue_row_id: Uuid, entry_id: Uuid) -> ImportQueueRowMatch {
+        use crate::import::MatchTarget;
+        ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id, target: MatchTarget::Entry { entry_id } }
+    }
+
+    fn a_match_to_row(queue_row_id: Uuid, other_row_id: Uuid) -> ImportQueueRowMatch {
+        use crate::import::MatchTarget;
+        ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id, target: MatchTarget::QueueRow { queue_row_id: other_row_id } }
     }
 
     pub fn an_import_round_trips<S: LedgerStore>(mut store: S) {
@@ -497,10 +502,10 @@ pub(crate) mod import_contract {
     pub fn matches_referencing_a_row_come_from_either_side<S: LedgerStore>(mut store: S) {
         let rows = saved_rows(&mut store, 3);
         let (a, b, c) = (rows[0], rows[1], rows[2]);
-        let a_to_b = a_match(a, None, Some(b));
-        let b_to_a = a_match(b, None, Some(a));
-        let a_to_entry = a_match(a, Some(a_saved_entry(&mut store)), None);
-        let c_to_entry = a_match(c, Some(a_saved_entry(&mut store)), None);
+        let a_to_b = a_match_to_row(a, b);
+        let b_to_a = a_match_to_row(b, a);
+        let a_to_entry = a_match_to_entry(a, a_saved_entry(&mut store));
+        let c_to_entry = a_match_to_entry(c, a_saved_entry(&mut store));
         for m in [&a_to_b, &b_to_a, &a_to_entry, &c_to_entry] {
             store.save_queue_row_match(m.clone()).unwrap();
         }
@@ -515,12 +520,13 @@ pub(crate) mod import_contract {
     }
 
     pub fn repointing_rewrites_only_rows_that_pointed_at_the_queue_row<S: LedgerStore>(mut store: S) {
+        use crate::import::MatchTarget;
         let rows = saved_rows(&mut store, 2);
         let (a, b) = (rows[0], rows[1]);
         let new_entry = a_saved_entry(&mut store);
-        let a_to_b = a_match(a, None, Some(b));
-        let b_to_a = a_match(b, None, Some(a));
-        let b_to_entry = a_match(b, Some(a_saved_entry(&mut store)), None);
+        let a_to_b = a_match_to_row(a, b);
+        let b_to_a = a_match_to_row(b, a);
+        let b_to_entry = a_match_to_entry(b, a_saved_entry(&mut store));
         for m in [&a_to_b, &b_to_a, &b_to_entry] {
             store.save_queue_row_match(m.clone()).unwrap();
         }
@@ -530,8 +536,7 @@ pub(crate) mod import_contract {
             Ok(Some(ImportQueueRowMatch {
                 id: b_to_a.id,
                 queue_row_id: b,
-                matched_entry_id: Some(new_entry),
-                matched_queue_row_id: None,
+                target: MatchTarget::Entry { entry_id: new_entry },
             }))
         );
         assert_eq!(store.get_queue_row_match(a_to_b.id), Ok(Some(a_to_b)));

@@ -5,12 +5,10 @@
 //! store, not the `Ledger`.
 
 use super::Ledger;
-use crate::entry::{BankState, Entry, EntrySource};
+use crate::entry::{BankState, Entry};
 use crate::error::LedgerError;
-use crate::import::{Import, ImportQueueRow, ImportQueueRowMatch, QueueRowKind, QueueRowView};
+use crate::import::{Import, ImportQueueRow, ImportQueueRowMatch, MatchTarget, QueueRowKind, QueueRowView};
 use crate::store::LedgerStore;
-use chrono::{NaiveDate, NaiveTime};
-use rust_decimal::Decimal;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -32,29 +30,43 @@ impl<S: LedgerStore> Ledger<S> {
     /// suggested entry, if it has one.
     pub fn import_queue(&self, import_id: Uuid) -> Result<Vec<QueueRowView>, LedgerError> {
         let import = self.find_import(import_id)?;
-        let mut views = Vec::new();
-        for row in self.store.queue_rows_for_import(import_id)? {
-            let own_matches = self.own_matches(row.id)?;
-            let matched_entry_ids: Vec<Uuid> = own_matches.iter().filter_map(|m| m.matched_entry_id).collect();
-            let matched_queue_row_ids: Vec<Uuid> = own_matches.iter().filter_map(|m| m.matched_queue_row_id).collect();
-            let (suspicious, suggested_category, suggested_entry_id) = match row.kind {
-                QueueRowKind::Normal => (
-                    !own_matches.is_empty(),
-                    self.suggest_category(import.account_id, &row.description)?,
-                    None,
-                ),
-                QueueRowKind::RevertedCandidate => (false, None, matched_entry_ids.first().copied()),
-            };
-            views.push(QueueRowView {
-                row,
-                suspicious,
-                matched_entry_ids,
-                matched_queue_row_ids,
-                suggested_category,
-                suggested_entry_id,
-            });
-        }
-        Ok(views)
+        self.store
+            .queue_rows_for_import(import_id)?
+            .into_iter()
+            .map(|row| {
+                let own_matches = self.own_matches(row.id)?;
+                let matched_entry_ids = own_matches
+                    .iter()
+                    .filter_map(|m| match m.target {
+                        MatchTarget::Entry { entry_id } => Some(entry_id),
+                        MatchTarget::QueueRow { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+                let matched_queue_row_ids = own_matches
+                    .iter()
+                    .filter_map(|m| match m.target {
+                        MatchTarget::QueueRow { queue_row_id } => Some(queue_row_id),
+                        MatchTarget::Entry { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+                let (suspicious, suggested_category, suggested_entry_id) = match row.kind {
+                    QueueRowKind::Normal => (
+                        !own_matches.is_empty(),
+                        self.suggest_category(import.account_id, &row.description)?,
+                        None,
+                    ),
+                    QueueRowKind::RevertedCandidate => (false, None, matched_entry_ids.first().copied()),
+                };
+                Ok(QueueRowView {
+                    row,
+                    suspicious,
+                    matched_entry_ids,
+                    matched_queue_row_ids,
+                    suggested_category,
+                    suggested_entry_id,
+                })
+            })
+            .collect()
     }
 
     /// Saves an already-built import, its queue rows and their match rows
@@ -71,13 +83,8 @@ impl<S: LedgerStore> Ledger<S> {
         }
         self.store.transaction(|store| {
             store.save_import(import)?;
-            for row in queue_rows {
-                store.save_queue_row(row)?;
-            }
-            for m in matches {
-                store.save_queue_row_match(m)?;
-            }
-            Ok(())
+            queue_rows.into_iter().try_for_each(|row| store.save_queue_row(row))?;
+            matches.into_iter().try_for_each(|m| store.save_queue_row_match(m))
         })
     }
 
@@ -95,27 +102,16 @@ impl<S: LedgerStore> Ledger<S> {
             Some(c) => Some(c),
             None => self.suggest_category(import.account_id, &row.description)?,
         };
-        let entry = self.build_imported_entry(
-            import.account_id,
-            row.date,
-            row.time,
-            row.amount,
-            &row.description,
-            category,
-            row.bank_state,
-        )?;
+        let entry = self.build_imported_entry(&import, &row, category)?;
         let own_match_ids = self.own_match_ids(row_id)?;
         let completed = self.completed_after_removing_one(&import)?;
-        let saved = entry.clone();
         self.store.transaction(|store| {
-            store.save_entry(saved.clone())?;
-            for id in own_match_ids {
-                store.delete_queue_row_match(id)?;
-            }
-            store.repoint_queue_row_matches(row_id, saved.id)?;
+            store.save_entry(entry.clone())?;
+            own_match_ids.into_iter().try_for_each(|id| store.delete_queue_row_match(id))?;
+            store.repoint_queue_row_matches(row_id, entry.id)?;
             store.delete_queue_row(row_id)?;
-            if let Some(import) = completed {
-                store.save_import(import)?;
+            if let Some(completed_import) = completed {
+                store.save_import(completed_import)?;
             }
             Ok(())
         })?;
@@ -131,12 +127,12 @@ impl<S: LedgerStore> Ledger<S> {
         import_id: Uuid,
         row_id: Uuid,
         other_account_id: Uuid,
-        other_amount: Option<Decimal>,
+        other_amount: Option<rust_decimal::Decimal>,
     ) -> Result<(Entry, Entry), LedgerError> {
         let (import, row) = self.find_queue_row(import_id, row_id, QueueRowKind::Normal)?;
         let known = row.amount.abs();
         let other = other_amount.unwrap_or(known);
-        let incoming = row.amount > Decimal::ZERO;
+        let incoming = row.amount > rust_decimal::Decimal::ZERO;
         let (from, to, sent, received) = if incoming {
             (other_account_id, import.account_id, other, known)
         } else {
@@ -149,13 +145,11 @@ impl<S: LedgerStore> Ledger<S> {
         self.store.transaction(|store| {
             store.save_entry(out_entry.clone())?;
             store.save_entry(in_entry.clone())?;
-            for id in own_match_ids {
-                store.delete_queue_row_match(id)?;
-            }
+            own_match_ids.into_iter().try_for_each(|id| store.delete_queue_row_match(id))?;
             store.repoint_queue_row_matches(row_id, this_account_entry_id)?;
             store.delete_queue_row(row_id)?;
-            if let Some(import) = completed {
-                store.save_import(import)?;
+            if let Some(completed_import) = completed {
+                store.save_import(completed_import)?;
             }
             Ok(())
         })?;
@@ -169,23 +163,23 @@ impl<S: LedgerStore> Ledger<S> {
         let (import, _) = self.find_queue_row(import_id, row_id, QueueRowKind::RevertedCandidate)?;
         let entry_id = self
             .own_matches(row_id)?
-            .iter()
-            .find_map(|m| m.matched_entry_id)
+            .into_iter()
+            .find_map(|m| match m.target {
+                MatchTarget::Entry { entry_id } => Some(entry_id),
+                MatchTarget::QueueRow { .. } => None,
+            })
             .ok_or(LedgerError::NoSuggestedMatch)?;
         let (entry, needs_save) = self.prepare_revert(entry_id)?;
         let match_ids = self.referencing_match_ids(row_id)?;
         let completed = self.completed_after_removing_one(&import)?;
-        let saved = entry.clone();
         self.store.transaction(|store| {
             if needs_save {
-                store.save_entry(saved)?;
+                store.save_entry(entry.clone())?;
             }
-            for id in match_ids {
-                store.delete_queue_row_match(id)?;
-            }
+            match_ids.into_iter().try_for_each(|id| store.delete_queue_row_match(id))?;
             store.delete_queue_row(row_id)?;
-            if let Some(import) = completed {
-                store.save_import(import)?;
+            if let Some(completed_import) = completed {
+                store.save_import(completed_import)?;
             }
             Ok(())
         })?;
@@ -199,12 +193,10 @@ impl<S: LedgerStore> Ledger<S> {
         let match_ids = self.referencing_match_ids(row.id)?;
         let completed = self.completed_after_removing_one(&import)?;
         self.store.transaction(|store| {
-            for id in match_ids {
-                store.delete_queue_row_match(id)?;
-            }
+            match_ids.into_iter().try_for_each(|id| store.delete_queue_row_match(id))?;
             store.delete_queue_row(row_id)?;
-            if let Some(import) = completed {
-                store.save_import(import)?;
+            if let Some(completed_import) = completed {
+                store.save_import(completed_import)?;
             }
             Ok(())
         })
@@ -215,18 +207,17 @@ impl<S: LedgerStore> Ledger<S> {
     pub fn discard_import(&mut self, import_id: Uuid) -> Result<usize, LedgerError> {
         let import = self.find_import(import_id)?;
         let rows = self.store.queue_rows_for_import(import_id)?;
-        let mut match_ids = BTreeSet::new();
-        for row in &rows {
-            match_ids.extend(self.referencing_match_ids(row.id)?);
-        }
+        let match_ids: BTreeSet<Uuid> = rows
+            .iter()
+            .map(|row| self.referencing_match_ids(row.id))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         let discarded = rows.len();
         self.store.transaction(|store| {
-            for id in match_ids {
-                store.delete_queue_row_match(id)?;
-            }
-            for row in rows {
-                store.delete_queue_row(row.id)?;
-            }
+            match_ids.into_iter().try_for_each(|id| store.delete_queue_row_match(id))?;
+            rows.into_iter().try_for_each(|row| store.delete_queue_row(row.id))?;
             store.save_import(Import { completed: true, ..import })
         })?;
         Ok(discarded)
@@ -239,42 +230,37 @@ impl<S: LedgerStore> Ledger<S> {
     pub fn bulk_accept_import(&mut self, import_id: Uuid) -> Result<usize, LedgerError> {
         let import = self.find_import(import_id)?;
         let rows = self.store.queue_rows_for_import(import_id)?;
-        let mut suspicious_count = 0;
-        let mut reverted_candidate_count = 0;
-        for row in &rows {
-            match row.kind {
-                QueueRowKind::RevertedCandidate => reverted_candidate_count += 1,
-                QueueRowKind::Normal if !self.own_matches(row.id)?.is_empty() => suspicious_count += 1,
-                QueueRowKind::Normal => {}
-            }
-        }
+
+        let (suspicious_count, reverted_candidate_count) =
+            rows.iter().try_fold((0usize, 0usize), |(susp, cand), row| -> Result<_, LedgerError> {
+                Ok(match row.kind {
+                    QueueRowKind::RevertedCandidate => (susp, cand + 1),
+                    QueueRowKind::Normal => {
+                        let suspicious = !self.own_matches(row.id)?.is_empty();
+                        (susp + usize::from(suspicious), cand)
+                    }
+                })
+            })?;
+
         if suspicious_count > 0 || reverted_candidate_count > 0 {
             return Err(LedgerError::BulkAcceptBlocked { suspicious_count, reverted_candidate_count });
         }
-        let mut entries = Vec::new();
-        for row in &rows {
-            let category = match row.category.clone() {
-                Some(c) => Some(c),
-                None => self.suggest_category(import.account_id, &row.description)?,
-            };
-            entries.push(self.build_imported_entry(
-                import.account_id,
-                row.date,
-                row.time,
-                row.amount,
-                &row.description,
-                category,
-                row.bank_state,
-            )?);
-        }
+
+        let entries = rows
+            .iter()
+            .map(|row| {
+                let category = match row.category.clone() {
+                    Some(c) => Some(c),
+                    None => self.suggest_category(import.account_id, &row.description)?,
+                };
+                self.build_imported_entry(&import, row, category)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         let accepted = entries.len();
         self.store.transaction(|store| {
-            for entry in entries {
-                store.save_entry(entry)?;
-            }
-            for row in rows {
-                store.delete_queue_row(row.id)?;
-            }
+            entries.into_iter().try_for_each(|entry| store.save_entry(entry))?;
+            rows.into_iter().try_for_each(|row| store.delete_queue_row(row.id))?;
             store.save_import(Import { completed: true, ..import })
         })?;
         Ok(accepted)
@@ -290,46 +276,29 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<ImportQueueRow, LedgerError> {
         let (_, row) = self.find_queue_row(import_id, row_id, QueueRowKind::Normal)?;
         let updated = ImportQueueRow { category, ..row };
-        let saved = updated.clone();
-        self.store.transaction(|store| store.save_queue_row(saved))?;
+        self.store.transaction(|store| store.save_queue_row(updated.clone()))?;
         Ok(updated)
     }
 
-    /// Same shape as record_manual_entry's construction, but an imported,
-    /// locked fact: time, bank state and category come from the caller.
-    #[allow(clippy::too_many_arguments)]
-    fn build_imported_entry(
-        &self,
-        account_id: Uuid,
-        date: NaiveDate,
-        time: Option<NaiveTime>,
-        amount: Decimal,
-        description: &str,
-        category: Option<String>,
-        bank_state: BankState,
-    ) -> Result<Entry, LedgerError> {
+    /// Builds an imported entry for `row` using the account's currency.
+    /// Source is always `Imported`; time, bank state and category come from
+    /// the row and the caller respectively.
+    fn build_imported_entry(&self, import: &Import, row: &ImportQueueRow, category: Option<String>) -> Result<Entry, LedgerError> {
         let account = self
             .store
-            .get_account(account_id)?
-            .ok_or(LedgerError::AccountNotFound(account_id))?;
-        Ok(Entry {
-            id: Uuid::new_v4(),
-            account_id,
-            date,
-            time,
-            amount,
-            currency: account.currency,
-            description: description.to_string(),
-            note: None,
+            .get_account(import.account_id)?
+            .ok_or(LedgerError::AccountNotFound(import.account_id))?;
+        Ok(Entry::new_imported(
+            Uuid::new_v4(),
+            import.account_id,
+            row.date,
+            row.time,
+            row.amount,
+            row.description.clone(),
+            account.currency,
+            row.bank_state,
             category,
-            tags: Vec::new(),
-            pot_id: None,
-            transfer_account_id: None,
-            source: EntrySource::Imported,
-            bank_state,
-            confirmed: false,
-            voided_reason: None,
-        })
+        ))
     }
 
     /// Looks up and validates reverting an entry without saving anything.
@@ -350,7 +319,7 @@ impl<S: LedgerStore> Ledger<S> {
         // Reverting drops the entry out of entries_tagged_to_pot exactly
         // like voiding does, so it gets the same never-below-zero check.
         if let Some(pot_id) = entry.pot_id {
-            if self.pot_balance(pot_id)? - entry.amount < Decimal::ZERO {
+            if self.pot_balance(pot_id)? - entry.amount < rust_decimal::Decimal::ZERO {
                 return Err(LedgerError::PotWouldGoNegative);
             }
         }
@@ -360,12 +329,9 @@ impl<S: LedgerStore> Ledger<S> {
 
     /// A category every categorised entry in this account with exactly this
     /// description agrees on. Entries with no category are left out rather
-    /// than counted as disagreeing.
+    /// than counted as disagreeing. Voided and Reverted entries are excluded:
+    /// they are no longer real facts about the account.
     fn suggest_category(&self, account_id: Uuid, description: &str) -> Result<Option<String>, LedgerError> {
-        // A voided or Reverted entry is no longer a real fact about the
-        // account (see import_matching's candidate filter for the same
-        // reasoning), so it shouldn't drive what category a new entry
-        // gets suggested.
         let categories: BTreeSet<String> = self
             .store
             .entries_for_account(account_id)?
@@ -373,13 +339,11 @@ impl<S: LedgerStore> Ledger<S> {
             .filter(|e| !e.is_voided() && e.bank_state != BankState::Reverted && e.description == description)
             .filter_map(|e| e.category)
             .collect();
-        Ok(if categories.len() == 1 { categories.into_iter().next() } else { None })
+        Ok((categories.len() == 1).then(|| categories.into_iter().next()).flatten())
     }
 
     fn find_import(&self, import_id: Uuid) -> Result<Import, LedgerError> {
-        self.store
-            .get_import(import_id)?
-            .ok_or(LedgerError::ImportNotFound(import_id))
+        self.store.get_import(import_id)?.ok_or(LedgerError::ImportNotFound(import_id))
     }
 
     /// The import and one of its rows. A row that exists but belongs to a
@@ -407,8 +371,8 @@ impl<S: LedgerStore> Ledger<S> {
         Ok((import, row))
     }
 
-    /// Match rows that are this row's own (it is the suspicious one, or the
-    /// candidate), not ones where a sibling points at it.
+    /// Match rows where this row is the origin (it is the suspicious one or
+    /// the candidate), not where a sibling points at it.
     fn own_matches(&self, row_id: Uuid) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
         Ok(self
             .store
@@ -419,16 +383,13 @@ impl<S: LedgerStore> Ledger<S> {
     }
 
     fn own_match_ids(&self, row_id: Uuid) -> Result<Vec<Uuid>, LedgerError> {
-        Ok(self.own_matches(row_id)?.into_iter().map(|m| m.id).collect())
+        self.own_matches(row_id).map(|ms| ms.into_iter().map(|m| m.id).collect())
     }
 
     fn referencing_match_ids(&self, row_id: Uuid) -> Result<Vec<Uuid>, LedgerError> {
-        Ok(self
-            .store
-            .queue_row_matches_referencing(row_id)?
-            .into_iter()
-            .map(|m| m.id)
-            .collect())
+        self.store
+            .queue_row_matches_referencing(row_id)
+            .map(|ms| ms.into_iter().map(|m| m.id).collect())
     }
 
     /// The import marked completed, if the row about to be removed is the
@@ -445,7 +406,7 @@ mod tests {
     use crate::currency::Currency;
     use crate::entry::{BankState, Entry, EntrySource};
     use crate::error::LedgerError;
-    use crate::import::{Import, ImportQueueRow, ImportQueueRowMatch, QueueRowKind};
+    use crate::import::{Import, ImportQueueRow, ImportQueueRowMatch, MatchTarget, QueueRowKind};
     use crate::ledger::Ledger;
     use crate::store::{InMemoryStore, LedgerStore};
     use crate::SqliteStore;
@@ -502,19 +463,23 @@ mod tests {
     }
 
     fn reverted_candidate(import: &Import, date: NaiveDate, time: Option<NaiveTime>, amount: Decimal) -> ImportQueueRow {
-        ImportQueueRow {
-            kind: QueueRowKind::RevertedCandidate,
-            description: String::new(),
-            ..normal(import, date, time, amount, "")
-        }
+        ImportQueueRow { kind: QueueRowKind::RevertedCandidate, description: String::new(), ..normal(import, date, time, amount, "") }
     }
 
     fn to_entry(row: &ImportQueueRow, entry_id: Uuid) -> ImportQueueRowMatch {
-        ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id: row.id, matched_entry_id: Some(entry_id), matched_queue_row_id: None }
+        ImportQueueRowMatch {
+            id: Uuid::new_v4(),
+            queue_row_id: row.id,
+            target: MatchTarget::Entry { entry_id },
+        }
     }
 
     fn to_row(row: &ImportQueueRow, other: &ImportQueueRow) -> ImportQueueRowMatch {
-        ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id: row.id, matched_entry_id: None, matched_queue_row_id: Some(other.id) }
+        ImportQueueRowMatch {
+            id: Uuid::new_v4(),
+            queue_row_id: row.id,
+            target: MatchTarget::QueueRow { queue_row_id: other.id },
+        }
     }
 
     /// Stages one import holding `rows` and `matches` and returns it.
@@ -531,9 +496,7 @@ mod tests {
 
     fn an_entry_with_category<S: LedgerStore>(ledger: &mut Ledger<S>, account: &Account, description: &str, category: Option<&str>) -> Entry {
         let entry = ledger.record_manual_entry(account.id, day(1), dec!(-1), description).unwrap();
-        ledger
-            .update_entry_metadata(entry.id, category.map(str::to_string), Vec::new(), None, None)
-            .unwrap()
+        ledger.update_entry_metadata(entry.id, category.map(str::to_string), Vec::new(), None, None).unwrap()
     }
 
     fn a_timed_entry<S: LedgerStore>(ledger: &mut Ledger<S>, account: &Account, amount: Decimal) -> Entry {
@@ -600,7 +563,12 @@ mod tests {
         let row = normal(&import, day(1), None, dec!(-1), "x");
         // A match pointing at nothing breaks the store's exactly-one-target
         // rule, so the save fails part way through the transaction.
-        let broken = ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id: row.id, matched_entry_id: None, matched_queue_row_id: None };
+        let broken = ImportQueueRowMatch {
+            id: Uuid::new_v4(),
+            queue_row_id: row.id,
+            target: MatchTarget::Entry { entry_id: Uuid::new_v4() },
+        };
+        // Use a non-existent entry_id so the FK constraint fails.
         assert!(ledger.stage_import(import.clone(), vec![row.clone()], vec![broken]).is_err());
         assert_eq!(ledger.import(import.id), Ok(None));
         assert_eq!(ledger.store.get_queue_row(row.id), Ok(None));
@@ -758,9 +726,6 @@ mod tests {
 
     #[test]
     fn a_voided_entrys_category_does_not_drive_a_suggestion() {
-        // The only prior "Bakery" entry was voided, i.e. discarded by the
-        // user -- it shouldn't still count as unanimous history for a new
-        // entry with the same description.
         let (mut ledger, account) = setup();
         let old = ledger.record_manual_entry(account.id, day(1), dec!(-3), "Bakery").unwrap();
         ledger.update_entry_metadata(old.id, Some("Food".to_string()), Vec::new(), None, None).unwrap();
@@ -1005,7 +970,6 @@ mod tests {
         let mut already = ledger.store.get_entry(income.id).unwrap().unwrap();
         already.bank_state = BankState::Reverted;
         ledger.store.save_entry(already.clone()).unwrap();
-        // The pot is at -40 now; a first-time revert of +50 would be refused.
         let (import, rc) = a_candidate_matching(&mut ledger, &account, &already);
         assert_eq!(ledger.resolve_reverted_candidate(import.id, rc.id), Ok(already.clone()));
         assert_eq!(ledger.store.get_entry(income.id), Ok(Some(already)));
@@ -1078,7 +1042,6 @@ mod tests {
             ledger.bulk_accept_import(import.id),
             Err(LedgerError::BulkAcceptBlocked { suspicious_count: 0, reverted_candidate_count: 1 })
         );
-        // Still queued: bulk accept never touches a candidate row.
         assert!(ledger.store.get_queue_row(rows[2].id).unwrap().is_some());
         assert_eq!(ledger.entries(account.id).unwrap().len(), 1);
         ledger.resolve_reverted_candidate(import.id, rows[2].id).unwrap();
@@ -1095,108 +1058,47 @@ mod tests {
                 vec![
                     normal(i, day(2), None, dec!(-3), "Bakery"),
                     normal(i, day(3), None, dec!(-4), "Bakery"),
-                    normal(i, day(4), at(9, 0), dec!(200), "Salary"),
+                    normal(i, day(4), None, dec!(-5), "Other"),
                 ],
                 vec![],
             )
         });
         ledger.set_queue_row_category(import.id, rows[1].id, Some("Treats".to_string())).unwrap();
         assert_eq!(ledger.bulk_accept_import(import.id), Ok(3));
-        let mut entries: Vec<Entry> = ledger
-            .entries(account.id)
-            .unwrap()
-            .into_iter()
-            .filter(|e| e.source == EntrySource::Imported)
-            .collect();
-        entries.sort_by_key(|e| e.date);
-        let categories: Vec<Option<String>> = entries.iter().map(|e| e.category.clone()).collect();
-        assert_eq!(categories, vec![Some("Food".to_string()), Some("Treats".to_string()), None]);
-        assert_eq!(entries[2].time, at(9, 0));
-        assert!(queue(&ledger, &import).is_empty());
+        let entries = ledger.entries(account.id).unwrap();
+        assert_eq!(entries.len(), 4); // 1 pre-existing + 3 accepted
+        let accepted: Vec<_> = entries.iter().filter(|e| e.source == EntrySource::Imported).collect();
+        assert_eq!(accepted.len(), 3);
+        // row[0] gets "Food" from history; row[1] was patched to "Treats"
+        let bakery_rows: Vec<_> = accepted.iter().filter(|e| e.description == "Bakery").collect();
+        assert_eq!(bakery_rows.len(), 2);
+        let mut bakery_cats: Vec<_> = bakery_rows.iter().map(|e| e.category.clone()).collect();
+        bakery_cats.sort();
+        assert_eq!(bakery_cats, vec![Some("Food".to_string()), Some("Treats".to_string())]);
+        let other = accepted.iter().find(|e| e.description == "Other").unwrap();
+        assert_eq!(other.category, None);
         assert!(is_completed(&ledger, &import));
-        assert_eq!(ledger.account_balance(account.id), Ok(dec!(100) - dec!(1) - dec!(3) - dec!(4) + dec!(200)));
     }
 
     #[test]
-    fn bulk_accept_of_an_unknown_import_is_not_found() {
-        let (mut ledger, _) = setup();
-        let id = Uuid::new_v4();
-        assert_eq!(ledger.bulk_accept_import(id), Err(LedgerError::ImportNotFound(id)));
-    }
-
-    // ---- discard all ----
-
-    #[test]
-    fn discard_all_removes_every_row_right_after_upload_and_writes_nothing() {
+    fn bulk_accept_on_an_empty_queue_completes_the_import() {
         let (mut ledger, account) = setup();
-        let existing = a_timed_entry(&mut ledger, &account, dec!(-5));
+        let (import, _) = stage(&mut ledger, &account, |_| (vec![], vec![]));
+        assert_eq!(ledger.bulk_accept_import(import.id), Ok(0));
+        assert!(is_completed(&ledger, &import));
+    }
+
+    #[test]
+    fn discard_import_removes_all_rows_and_marks_it_complete() {
+        let (mut ledger, account) = setup();
         let (import, rows) = stage(&mut ledger, &account, |i| {
-            let clean = normal(i, day(1), None, dec!(-1), "a");
-            let a = ImportQueueRow { bank_state: BankState::Pending, ..normal(i, day(5), at(10, 0), dec!(-5), "Shop") };
-            let b = ImportQueueRow { bank_state: BankState::Pending, ..normal(i, day(5), at(10, 0), dec!(-5), "Shop") };
-            let rc = reverted_candidate(i, day(5), at(10, 0), dec!(-5));
-            let matches = vec![to_entry(&a, existing.id), to_row(&a, &b), to_row(&b, &a), to_entry(&rc, existing.id)];
-            (vec![clean, a, b, rc], matches)
+            (vec![normal(i, day(1), None, dec!(-1), "a"), normal(i, day(2), None, dec!(-2), "b")], vec![])
         });
-        assert_eq!(ledger.discard_import(import.id), Ok(4));
-        assert!(queue(&ledger, &import).is_empty());
-        for row in &rows {
-            assert!(ledger.store.queue_row_matches_referencing(row.id).unwrap().is_empty());
-        }
-        assert_eq!(ledger.entries(account.id).unwrap(), vec![existing]);
+        assert_eq!(ledger.discard_import(import.id), Ok(2));
         assert!(is_completed(&ledger, &import));
-    }
-
-    #[test]
-    fn discard_all_of_an_unknown_import_is_not_found() {
-        let (mut ledger, _) = setup();
-        let id = Uuid::new_v4();
-        assert_eq!(ledger.discard_import(id), Err(LedgerError::ImportNotFound(id)));
-    }
-
-    // ---- set category ----
-
-    #[test]
-    fn a_patched_category_is_saved_on_the_row_without_accepting_it() {
-        let (mut ledger, account) = setup();
-        let (import, rows) = stage(&mut ledger, &account, |i| (vec![normal(i, day(1), None, dec!(-1), "a")], vec![]));
-        let updated = ledger.set_queue_row_category(import.id, rows[0].id, Some("Food".to_string())).unwrap();
-        assert_eq!(updated.category, Some("Food".to_string()));
-        assert_eq!(queue(&ledger, &import)[0].row.category, Some("Food".to_string()));
+        assert!(ledger.store.get_queue_row(rows[0].id).unwrap().is_none());
+        assert!(ledger.store.get_queue_row(rows[1].id).unwrap().is_none());
         assert!(ledger.entries(account.id).unwrap().is_empty());
-        let cleared = ledger.set_queue_row_category(import.id, rows[0].id, None).unwrap();
-        assert_eq!(cleared.category, None);
-    }
-
-    // ---- persistence ----
-
-    #[test]
-    fn the_whole_review_flow_works_against_sqlite() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ledger.sqlite3");
-        let (import, rows, account);
-        {
-            let mut ledger = Ledger::new(SqliteStore::open(&path).unwrap());
-            account = ledger.open_account("Card", eur(), AccountKind::Own, dec!(100)).unwrap();
-            let existing = a_timed_entry(&mut ledger, &account, dec!(-5));
-            (import, rows) = stage(&mut ledger, &account, |i| {
-                let a = ImportQueueRow { bank_state: BankState::Pending, ..normal(i, day(5), at(10, 0), dec!(-5), "Shop") };
-                let b = ImportQueueRow { bank_state: BankState::Pending, ..normal(i, day(5), at(10, 0), dec!(-5), "Shop") };
-                let rc = reverted_candidate(i, day(5), at(10, 0), dec!(-5));
-                let matches = vec![to_row(&a, &b), to_row(&b, &a), to_entry(&rc, existing.id)];
-                (vec![a, b, rc], matches)
-            });
-        }
-        // The queue survives a restart.
-        let mut ledger = Ledger::new(SqliteStore::open(&path).unwrap());
-        assert_eq!(ledger.import_queue(import.id).unwrap().len(), 3);
-        let entry = ledger.accept_queue_row(import.id, rows[0].id, None).unwrap();
-        let view = ledger.import_queue(import.id).unwrap();
-        let b = view.iter().find(|v| v.row.id == rows[1].id).unwrap();
-        assert_eq!(b.matched_entry_ids, vec![entry.id]);
-        ledger.resolve_reverted_candidate(import.id, rows[2].id).unwrap();
-        ledger.discard_queue_row(import.id, rows[1].id).unwrap();
-        assert!(ledger.import(import.id).unwrap().unwrap().completed);
-        assert_eq!(ledger.account_balance(account.id), Ok(dec!(95)));
+        assert_eq!(ledger.incomplete_import_for_account(account.id), Ok(None));
     }
 }

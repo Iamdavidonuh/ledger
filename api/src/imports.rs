@@ -12,6 +12,7 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use importer::{BankA, BankB, ImportError, Importer, ParseResult};
 use ledger_core::{Entry, Import, ImportQueueRow, LedgerError, QueueRowView};
+use std::collections::HashSet;
 use rust_decimal::Decimal;
 use uuid::Uuid;
 
@@ -62,7 +63,11 @@ async fn read_upload(mut multipart: Multipart) -> Result<Upload, AppError> {
             }
             Some("bank_type") => bank_type = Some(BankType::parse(field.text().await.map_err(bad)?.trim())?),
             Some("file") => {
-                let file_name = field.file_name().unwrap_or_default().to_string();
+                let file_name = field
+                    .file_name()
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or("unknown")
+                    .to_string();
                 file = Some((file_name, field.bytes().await.map_err(bad)?.to_vec()));
             }
             _ => {}
@@ -179,6 +184,8 @@ async fn upload(State(state): State<AppState>, multipart: Multipart) -> Result<J
             };
             let staged = build_queue(&import, &parsed, &entries);
             import.rows_read = staged.rows.len() as i64;
+            let matched_row_ids: HashSet<uuid::Uuid> =
+                staged.matches.iter().map(|m| m.queue_row_id).collect();
             let result = ImportResult {
                 import_id: import.id,
                 total_rows: staged.rows.len(),
@@ -186,8 +193,7 @@ async fn upload(State(state): State<AppState>, multipart: Multipart) -> Result<J
                 suspicious_count: staged
                     .rows
                     .iter()
-                    .filter(|r| r.kind == ledger_core::QueueRowKind::Normal)
-                    .filter(|r| staged.matches.iter().any(|m| m.queue_row_id == r.id))
+                    .filter(|r| r.kind == ledger_core::QueueRowKind::Normal && matched_row_ids.contains(&r.id))
                     .count(),
             };
             ledger.stage_import(import, staged.rows, staged.matches)?;

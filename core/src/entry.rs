@@ -42,6 +42,69 @@ impl Entry {
     pub fn is_voided(&self) -> bool {
         self.voided_reason.is_some()
     }
+
+    /// A manually recorded entry: Manual source, Completed bank state, no time,
+    /// no category, no tags, no pot, no transfer link, unconfirmed, not voided.
+    pub fn new_manual(
+        id: uuid::Uuid,
+        account_id: uuid::Uuid,
+        date: chrono::NaiveDate,
+        amount: rust_decimal::Decimal,
+        description: impl Into<String>,
+        currency: crate::currency::Currency,
+    ) -> Self {
+        Entry {
+            id,
+            account_id,
+            date,
+            time: None,
+            amount,
+            currency,
+            description: description.into(),
+            note: None,
+            category: None,
+            tags: Vec::new(),
+            pot_id: None,
+            transfer_account_id: None,
+            source: EntrySource::Manual,
+            bank_state: BankState::Completed,
+            confirmed: false,
+            voided_reason: None,
+        }
+    }
+
+    /// An imported entry: Imported source, time/bank_state/category from caller.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_imported(
+        id: uuid::Uuid,
+        account_id: uuid::Uuid,
+        date: chrono::NaiveDate,
+        time: Option<chrono::NaiveTime>,
+        amount: rust_decimal::Decimal,
+        description: impl Into<String>,
+        currency: crate::currency::Currency,
+        bank_state: BankState,
+        category: Option<String>,
+    ) -> Self {
+        Entry {
+            id,
+            account_id,
+            date,
+            time,
+            amount,
+            currency,
+            description: description.into(),
+            note: None,
+            category,
+            tags: Vec::new(),
+            pot_id: None,
+            transfer_account_id: None,
+            source: EntrySource::Imported,
+            bank_state,
+            confirmed: false,
+            voided_reason: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

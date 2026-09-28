@@ -7,7 +7,7 @@
 //! reference lines. A page break inserts footer text and a repeated table
 //! header between rows, never inside the item text before the dates.
 
-use crate::{BankReader, DateRange, ImportError, ParsedRow, Statement};
+use crate::{BankReader, DateRange, ImportError, ParseResult, ParsedRow};
 use chrono::NaiveDate;
 use ledger_core::BankState;
 use rust_decimal::Decimal;
@@ -18,7 +18,7 @@ use std::str::FromStr;
 pub struct BankB;
 
 impl BankReader for BankB {
-    fn read(&self, bytes: &[u8]) -> Result<Statement, ImportError> {
+    fn read(&self, bytes: &[u8]) -> Result<ParseResult, ImportError> {
         parse_text(&pdftotext(bytes)?)
     }
 }
@@ -87,11 +87,9 @@ fn signed_amount(line: &str) -> Option<(Decimal, &str)> {
 
 /// The "DD-MM-" first half of a split date.
 fn is_day_month(line: &str) -> bool {
-    let b = line.as_bytes();
-    b.len() == 6
-        && b[2] == b'-'
-        && b[5] == b'-'
-        && [0, 1, 3, 4].iter().all(|&i| b[i].is_ascii_digit())
+    // Format: "DD-MM-" (6 bytes, digits at 0,1,3,4, dashes at 2,5)
+    matches!(line.as_bytes(), [d1, d2, b'-', m1, m2, b'-']
+        if d1.is_ascii_digit() && d2.is_ascii_digit() && m1.is_ascii_digit() && m2.is_ascii_digit())
 }
 
 fn split_date(day_month: &str, year: &str) -> Result<NaiveDate, ImportError> {
@@ -112,7 +110,7 @@ fn balance_after(lines: &[&str], label_at: usize, label: &str) -> Result<Decimal
         .ok_or_else(|| parse_error(format!("no amount after {label:?}")))
 }
 
-pub(crate) fn parse_text(text: &str) -> Result<Statement, ImportError> {
+pub(crate) fn parse_text(text: &str) -> Result<ParseResult, ImportError> {
     let lines: Vec<&str> = text
         .split(['\n', '\x0c'])
         .map(str::trim)
@@ -170,7 +168,7 @@ pub(crate) fn parse_text(text: &str) -> Result<Statement, ImportError> {
         rows.push(ParsedRow { date: booking_date, time: None, amount, description, bank_state: BankState::Completed });
     }
 
-    Ok(Statement { date_range, rows, reverted_candidates: Vec::new(), opening_balance, closing_balance })
+    Ok(ParseResult { date_range, rows, reverted_candidates: Vec::new(), opening_balance, closing_balance })
 }
 
 #[cfg(test)]
@@ -279,10 +277,10 @@ Please raise any objections without delay.
         assert!(crate::Importer::new(Stub(statement)).parse(b"").is_ok());
     }
 
-    struct Stub(crate::Statement);
+    struct Stub(crate::ParseResult);
 
     impl crate::BankReader for Stub {
-        fn read(&self, _bytes: &[u8]) -> Result<crate::Statement, ImportError> {
+        fn read(&self, _bytes: &[u8]) -> Result<crate::ParseResult, ImportError> {
             Ok(self.0.clone())
         }
     }

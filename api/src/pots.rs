@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use crate::error::{AppError, AppJson};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
@@ -11,7 +11,7 @@ use uuid::Uuid;
 #[derive(serde::Deserialize)]
 pub struct OpenPotRequest {
     pub name: String,
-    pub currency: String,
+    pub currency: Currency,
     pub target: Option<Decimal>,
     pub priority: Option<i32>,
 }
@@ -36,10 +36,9 @@ pub fn router() -> Router<AppState> {
         .route("/pots/:id/allocations", post(allocate))
 }
 
-async fn open_pot(State(state): State<AppState>, Json(req): Json<OpenPotRequest>) -> Result<Json<Pot>, AppError> {
-    let currency = Currency::new(&req.currency).map_err(|e| AppError::bad_request(e.to_string()))?;
+async fn open_pot(State(state): State<AppState>, AppJson(req): AppJson<OpenPotRequest>) -> Result<Json<Pot>, AppError> {
     let pot = state
-        .with_ledger(move |ledger| ledger.open_pot(&req.name, currency, req.target, req.priority))
+        .with_ledger(move |ledger| ledger.open_pot(&req.name, req.currency, req.target, req.priority))
         .await?;
     Ok(Json(pot))
 }
@@ -47,12 +46,10 @@ async fn open_pot(State(state): State<AppState>, Json(req): Json<OpenPotRequest>
 async fn list_pots(State(state): State<AppState>) -> Result<Json<Vec<PotWithBalance>>, AppError> {
     let with_balances = state
         .with_ledger(|ledger| {
-            let mut with_balances = Vec::new();
-            for pot in ledger.pots()? {
+            ledger.pots()?.into_iter().map(|pot| {
                 let balance = ledger.pot_balance(pot.id)?;
-                with_balances.push(PotWithBalance { pot, balance });
-            }
-            Ok(with_balances)
+                Ok(PotWithBalance { pot, balance })
+            }).collect::<Result<Vec<_>, _>>()
         })
         .await?;
     Ok(Json(with_balances))

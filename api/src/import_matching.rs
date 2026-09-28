@@ -4,7 +4,7 @@
 
 use chrono::NaiveTime;
 use importer::ParseResult;
-use ledger_core::{BankState, Entry, Import, ImportQueueRow, ImportQueueRowMatch, QueueRowKind};
+use ledger_core::{BankState, Entry, Import, ImportQueueRow, ImportQueueRowMatch, MatchTarget, QueueRowKind};
 use uuid::Uuid;
 
 pub struct Staged {
@@ -26,8 +26,12 @@ fn resembles(row: &ImportQueueRow, date: chrono::NaiveDate, time: Option<NaiveTi
     !row.amount.is_zero() && row.amount == amount && row.date == date && times_compatible(row.time, time)
 }
 
-fn match_row(queue_row_id: Uuid, matched_entry_id: Option<Uuid>, matched_queue_row_id: Option<Uuid>) -> ImportQueueRowMatch {
-    ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id, matched_entry_id, matched_queue_row_id }
+fn match_to_entry(queue_row_id: Uuid, entry_id: Uuid) -> ImportQueueRowMatch {
+    ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id, target: MatchTarget::Entry { entry_id } }
+}
+
+fn match_to_row(queue_row_id: Uuid, other_row_id: Uuid) -> ImportQueueRowMatch {
+    ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id, target: MatchTarget::QueueRow { queue_row_id: other_row_id } }
 }
 
 /// `entries` is every entry in the import's account; only non-voided,
@@ -68,19 +72,22 @@ pub fn build_queue(import: &Import, parsed: &ParseResult, entries: &[Entry]) -> 
         .iter()
         .map(|r| new_row(QueueRowKind::Normal, r.date, r.time, r.amount, &r.description, r.bank_state))
         .collect();
+
     for row in &normal {
-        for entry in candidates.iter().filter(|e| resembles(row, e.date, e.time, e.amount)) {
-            matches.push(match_row(row.id, Some(entry.id), None));
-        }
+        candidates
+            .iter()
+            .filter(|e| resembles(row, e.date, e.time, e.amount))
+            .for_each(|e| matches.push(match_to_entry(row.id, e.id)));
     }
+
     // Only Pending rows are matched against each other: the balance check
     // already vouches for every Completed row being real.
     let pending: Vec<&ImportQueueRow> = normal.iter().filter(|r| r.bank_state == BankState::Pending).collect();
     for (i, a) in pending.iter().enumerate() {
         for b in &pending[i + 1..] {
             if resembles(a, b.date, b.time, b.amount) {
-                matches.push(match_row(a.id, None, Some(b.id)));
-                matches.push(match_row(b.id, None, Some(a.id)));
+                matches.push(match_to_row(a.id, b.id));
+                matches.push(match_to_row(b.id, a.id));
             }
         }
     }
@@ -94,7 +101,7 @@ pub fn build_queue(import: &Import, parsed: &ParseResult, entries: &[Entry]) -> 
             .map(|e| e.id)
             .min();
         if let Some(entry_id) = suggestion {
-            matches.push(match_row(row.id, Some(entry_id), None));
+            matches.push(match_to_entry(row.id, entry_id));
         }
         rows.push(row);
     }
@@ -107,7 +114,7 @@ mod tests {
     use super::*;
     use chrono::{NaiveDate, NaiveTime, Utc};
     use importer::{DateRange, ParseResult, ParsedRow, RevertedCandidate};
-    use ledger_core::{BankState, Currency, Entry, EntrySource, Import, QueueRowKind};
+    use ledger_core::{BankState, Currency, Entry, EntrySource, Import, MatchTarget, QueueRowKind};
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use uuid::Uuid;
@@ -171,12 +178,28 @@ mod tests {
 
     fn entry_matches(staged: &Staged, row_index: usize) -> Vec<Uuid> {
         let id = staged.rows[row_index].id;
-        staged.matches.iter().filter(|m| m.queue_row_id == id).filter_map(|m| m.matched_entry_id).collect()
+        staged
+            .matches
+            .iter()
+            .filter(|m| m.queue_row_id == id)
+            .filter_map(|m| match m.target {
+                MatchTarget::Entry { entry_id } => Some(entry_id),
+                MatchTarget::QueueRow { .. } => None,
+            })
+            .collect()
     }
 
     fn row_matches(staged: &Staged, row_index: usize) -> Vec<Uuid> {
         let id = staged.rows[row_index].id;
-        staged.matches.iter().filter(|m| m.queue_row_id == id).filter_map(|m| m.matched_queue_row_id).collect()
+        staged
+            .matches
+            .iter()
+            .filter(|m| m.queue_row_id == id)
+            .filter_map(|m| match m.target {
+                MatchTarget::QueueRow { queue_row_id } => Some(queue_row_id),
+                MatchTarget::Entry { .. } => None,
+            })
+            .collect()
     }
 
     #[test]
