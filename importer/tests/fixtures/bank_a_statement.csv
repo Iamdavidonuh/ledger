@@ -1,0 +1,9 @@
+Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance
+Card Payment,Current,2026-02-28 23:40:00,2026-03-01 02:10:00,Night Kiosk,-10.00,0.50,EUR,COMPLETED,139.50
+Charge,Current,2026-03-02 08:00:00,2026-03-02 08:00:01,Card Delivery Fee,0.00,5.99,EUR,COMPLETED,133.51
+Transfer,Current,2026-03-03 02:00:00,2026-03-03 13:10:00,"Radio licence, TV, extras",-18.36,0.00,EUR,COMPLETED,115.15
+Card Payment,Current,2026-03-04 12:00:00,,Corner Bakery,-4.20,0.00,EUR,REVERTED,
+Card Payment,Current,2026-03-04 12:30:00,2026-03-05 01:00:00,Corner Bakery,-3.80,0.00,EUR,COMPLETED,111.35
+Card Refund,Current,2026-03-05 15:00:00,2026-03-05 15:00:01,Zero Thing,0.00,0.00,EUR,COMPLETED,111.35
+Deposit,Current,2026-03-06 09:00:00,2026-03-06 09:00:02,Payment from Jane Example,200.00,0.00,EUR,COMPLETED,311.35
+Card Payment,Current,2026-03-07 19:00:00,,Pending Cafe,-6.50,0.00,EUR,PENDING,
