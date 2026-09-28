@@ -5,8 +5,10 @@
 //! own `BankReader`; `Importer` runs the logic they share.
 
 pub mod bank_a;
+pub mod bank_b;
 
 pub use bank_a::BankA;
+pub use bank_b::BankB;
 pub use ledger_core::BankState;
 
 use chrono::{NaiveDate, NaiveTime};

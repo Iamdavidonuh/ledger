@@ -1,0 +1,103 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+2 0 obj
+<< /Length 909 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 800 Td
+(March 31, 2026) Tj T*
+(Account statement from 01.03.2026 to 31.03.2026) Tj T*
+(Account holder: Jane Example) Tj T*
+(Previous balance as at 28.02.2026 IBAN of Page Statement) Tj T*
+(+ 1,250.00 EUR XX00 0000 0000 0000 0000 00 1 1 2) Tj T*
+(Credit Debit Item Value Booking) Tj T*
+(date) Tj T*
+(- 1,000.00 SEPA Überweisung an) Tj T*
+(Sam Landlord) Tj T*
+(02-03-) Tj T*
+(2026) Tj T*
+(03-03-) Tj T*
+(2026) Tj T*
+(IBAN XX00 1111 2222 3333 4444 55) Tj T*
+(BIC EXAMPLEXXX) Tj T*
+(Payment Reference/E2E-Ref.) Tj T*
+(March rent) Tj T*
+(- 12.34 Kartenzahlung) Tj T*
+(Payment Reference/E2E-Ref.) Tj T*
+(05-03-) Tj T*
+(2026) Tj T*
+(05-03-) Tj T*
+(2026) Tj T*
+(Corner Grocer//Townsville/XX 04-03-2026T18:04:42 Folgenr. 09) Tj T*
+(Example Bank AG) Tj T*
+(Some Town) Tj T*
+(Jane Example) Tj T*
+(1 Example Street) Tj T*
+(Telephone \(0000\) 0000-0) Tj T*
+(0000000001 / 00000000 / 20260401) Tj T*
+ET
+endstream
+endobj
+3 0 obj
+<< /Length 562 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 800 Td
+(Credit Debit Item Value Booking) Tj T*
+(date) Tj T*
+(+ 2,500.00 SEPA Überweisung von) Tj T*
+(Example Employer GmbH) Tj T*
+(25-03-) Tj T*
+(2026) Tj T*
+(25-03-) Tj T*
+(2026) Tj T*
+(Payment Reference/E2E-Ref.) Tj T*
+(Salary 03/2026) Tj T*
+(- 0.04 Payment Reference/E2E-Ref.) Tj T*
+(Balance of settlement items) Tj T*
+(31-03-) Tj T*
+(2026) Tj T*
+(31-03-) Tj T*
+(2026) Tj T*
+(New balance) Tj T*
+(+ 2,737.62 EUR) Tj T*
+(Account number) Tj T*
+(0000000 00) Tj T*
+(Important notes) Tj T*
+(Please raise any objections without delay.) Tj T*
+ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 2 0 R >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 6 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 3 0 R >>
+endobj
+6 0 obj
+<< /Type /Pages /Kids [4 0 R 5 0 R] /Count 2 >>
+endobj
+7 0 obj
+<< /Type /Catalog /Pages 6 0 R >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000106 00000 n 
+0000001066 00000 n 
+0000001679 00000 n 
+0000001805 00000 n 
+0000001931 00000 n 
+0000001994 00000 n 
+trailer
+<< /Size 8 /Root 7 0 R >>
+startxref
+2043
+%%EOF
