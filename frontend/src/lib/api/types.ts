@@ -125,3 +125,102 @@ export interface UpdateValueRequest {
 	category: string;
 	date: string;
 }
+
+// Import feature (docs/superpowers/specs/2026-09-27-import.md). Backend
+// doesn't exist yet as of writing this -- these mirror the finalized spec,
+// not running code, so field names/casing may need reconciling once the
+// API is built. Row kind is a discriminated union on `kind` since a Normal
+// and a RevertedCandidate row genuinely carry different fields; accessing
+// a RevertedCandidate-only field on a Normal row shouldn't type-check.
+
+export type BankType = 'BankA' | 'BankB';
+
+export interface Import {
+	id: string;
+	account_id: string;
+	currency: string;
+	file_name: string;
+	uploaded_at: string;
+	rows_read: number;
+	opening_balance: string;
+	closing_balance: string;
+	completed: boolean;
+}
+
+// GET /imports returns this smaller shape, not the full Import -- the list
+// screen doesn't need account_id/currency/opening_balance/closing_balance,
+// so the API doesn't send them.
+export interface ImportSummary {
+	id: string;
+	file_name: string;
+	uploaded_at: string;
+	rows_read: number;
+	completed: boolean;
+}
+
+interface ImportQueueRowBase {
+	id: string;
+	import_id: string;
+	date: string;
+	time: string | null;
+	amount: string;
+	currency: string;
+	bank_state: BankState;
+}
+
+export interface NormalQueueRow extends ImportQueueRowBase {
+	kind: 'Normal';
+	description: string;
+	category: string | null;
+	suspicious: boolean;
+	matched_entry_ids: string[];
+	matched_queue_row_ids: string[];
+	suggested_category: string | null;
+}
+
+export interface RevertedCandidateQueueRow extends ImportQueueRowBase {
+	kind: 'RevertedCandidate';
+	suggested_entry_id: string | null;
+}
+
+export type ImportQueueRow = NormalQueueRow | RevertedCandidateQueueRow;
+
+// PATCH /imports/:id/queue/:row_id returns the bare queue row as stored --
+// not the QueueRowView shape above (no suspicious/matched_*/suggested_*
+// fields; those are only computed for GET /imports/:id/queue).
+export interface PatchedQueueRow {
+	id: string;
+	import_id: string;
+	kind: 'Normal' | 'RevertedCandidate';
+	date: string;
+	time: string | null;
+	amount: string;
+	currency: string;
+	description: string;
+	bank_state: BankState;
+	category: string | null;
+}
+
+export interface ImportResult {
+	import_id: string;
+	total_rows: number;
+	reverted_candidate_count: number;
+	suspicious_count: number;
+}
+
+export interface AcceptQueueRowRequest {
+	category?: string;
+}
+
+export interface AcceptAsTransferRequest {
+	other_account_id: string;
+	other_amount?: string;
+}
+
+export interface UpdateQueueRowCategoryRequest {
+	category: string | null;
+}
+
+export interface AcceptAllResult {
+	accepted: number;
+}

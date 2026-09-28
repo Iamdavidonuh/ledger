@@ -362,11 +362,15 @@ impl<S: LedgerStore> Ledger<S> {
     /// description agrees on. Entries with no category are left out rather
     /// than counted as disagreeing.
     fn suggest_category(&self, account_id: Uuid, description: &str) -> Result<Option<String>, LedgerError> {
+        // A voided or Reverted entry is no longer a real fact about the
+        // account (see import_matching's candidate filter for the same
+        // reasoning), so it shouldn't drive what category a new entry
+        // gets suggested.
         let categories: BTreeSet<String> = self
             .store
             .entries_for_account(account_id)?
             .into_iter()
-            .filter(|e| e.description == description)
+            .filter(|e| !e.is_voided() && e.bank_state != BankState::Reverted && e.description == description)
             .filter_map(|e| e.category)
             .collect();
         Ok(if categories.len() == 1 { categories.into_iter().next() } else { None })
@@ -750,6 +754,20 @@ mod tests {
         ledger.accept_queue_row(import.id, rows[0].id, Some("Food".to_string())).unwrap();
         let second = ledger.accept_queue_row(import.id, rows[1].id, None).unwrap();
         assert_eq!(second.category, Some("Food".to_string()));
+    }
+
+    #[test]
+    fn a_voided_entrys_category_does_not_drive_a_suggestion() {
+        // The only prior "Bakery" entry was voided, i.e. discarded by the
+        // user -- it shouldn't still count as unanimous history for a new
+        // entry with the same description.
+        let (mut ledger, account) = setup();
+        let old = ledger.record_manual_entry(account.id, day(1), dec!(-3), "Bakery").unwrap();
+        ledger.update_entry_metadata(old.id, Some("Food".to_string()), Vec::new(), None, None).unwrap();
+        ledger.void_entry(old.id, "wrong account").unwrap();
+        let (import, rows) = stage(&mut ledger, &account, |i| (vec![normal(i, day(2), None, dec!(-4), "Bakery")], vec![]));
+        let accepted = ledger.accept_queue_row(import.id, rows[0].id, None).unwrap();
+        assert_eq!(accepted.category, None);
     }
 
     #[test]

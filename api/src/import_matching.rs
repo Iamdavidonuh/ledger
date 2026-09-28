@@ -30,13 +30,21 @@ fn match_row(queue_row_id: Uuid, matched_entry_id: Option<Uuid>, matched_queue_r
     ImportQueueRowMatch { id: Uuid::new_v4(), queue_row_id, matched_entry_id, matched_queue_row_id }
 }
 
-/// `entries` is every entry in the import's account; only non-voided ones
-/// inside the statement's date range are matched against.
+/// `entries` is every entry in the import's account; only non-voided,
+/// non-Reverted ones inside the statement's date range are matched
+/// against -- a voided or Reverted entry is no longer a real fact about
+/// the account, the same reason `pot_balance` and `account_balance`
+/// exclude both.
 pub fn build_queue(import: &Import, parsed: &ParseResult, entries: &[Entry]) -> Staged {
     let range = parsed.date_range;
     let candidates: Vec<&Entry> = entries
         .iter()
-        .filter(|e| !e.is_voided() && e.date >= range.start && e.date <= range.end)
+        .filter(|e| {
+            !e.is_voided()
+                && e.bank_state != BankState::Reverted
+                && e.date >= range.start
+                && e.date <= range.end
+        })
         .collect();
 
     let new_row = |kind, date, time, amount, description: &str, bank_state| ImportQueueRow {
@@ -228,6 +236,23 @@ mod tests {
         let imp = import();
         let mut e = entry(&imp, day(2), None, dec!(-3));
         e.voided_reason = Some("dup".to_string());
+        let staged = build_queue(
+            &imp,
+            &parsed(vec![row(day(2), None, dec!(-3), BankState::Completed)], vec![RevertedCandidate { date: day(2), time: at(9).unwrap(), amount: dec!(-3) }]),
+            &[e],
+        );
+        assert!(staged.matches.is_empty());
+    }
+
+    #[test]
+    fn a_reverted_entry_is_never_matched() {
+        // A Reverted entry is dead the same way a voided one is: it no
+        // longer counts toward any balance, so a new, unrelated row with
+        // the same date/time/amount must not be flagged suspicious against
+        // it, and it must never be offered as a revert suggestion either.
+        let imp = import();
+        let mut e = entry(&imp, day(2), None, dec!(-3));
+        e.bank_state = BankState::Reverted;
         let staged = build_queue(
             &imp,
             &parsed(vec![row(day(2), None, dec!(-3), BankState::Completed)], vec![RevertedCandidate { date: day(2), time: at(9).unwrap(), amount: dec!(-3) }]),
