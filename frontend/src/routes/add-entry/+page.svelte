@@ -85,12 +85,22 @@
 					.map((t) => t.trim())
 					.filter((t) => t.length > 0);
 				if (category.trim() || tags.length > 0 || potId) {
-					await api.entries.updateMetadata(entry.id, {
-						category: category.trim() || null,
-						tags,
-						note: null,
-						pot_id: potId || null
-					});
+					// The entry above is already saved at this point (its own
+					// account balance is affected either way), so a failure here
+					// -- most commonly the pot check refusing to go negative --
+					// must not leave that entry behind untagged with no sign
+					// anything was saved. Void it and surface the real error.
+					try {
+						await api.entries.updateMetadata(entry.id, {
+							category: category.trim() || null,
+							tags,
+							note: null,
+							pot_id: potId || null
+						});
+					} catch (metadataErr) {
+						await api.entries.void(entry.id, { reason: 'Entry could not be tagged as requested' }).catch(() => {});
+						throw metadataErr;
+					}
 				}
 			}
 			goto('/');
