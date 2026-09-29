@@ -19,6 +19,28 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// BankB reads a PDF by shelling out to `pdftotext`; a missing binary would
+/// otherwise surface as a confusing failure deep inside someone's first
+/// BankB upload, with nothing pointing at the actual problem (the deployed
+/// image is missing it). A warning at startup, not a hard exit: BankA
+/// imports, accounts, entries, pots and everything else this API does are
+/// unrelated to pdftotext and stay fully usable even with BankB degraded.
+fn check_pdftotext_is_available() {
+    let found = std::process::Command::new("pdftotext")
+        .arg("-v")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok();
+    if !found {
+        eprintln!(
+            "warning: pdftotext is not on PATH; BankB (PDF) imports will fail. \
+             Everything else is unaffected. Install poppler-utils, or fix the \
+             Docker image if this is deployed."
+        );
+    }
+}
+
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/health", axum::routing::get(health))
@@ -33,6 +55,7 @@ pub fn app(state: AppState) -> Router {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    check_pdftotext_is_available();
     let db_path = std::env::var("LEDGER_DB_PATH").unwrap_or_else(|_| "ledger.sqlite3".to_string());
     let store = SqliteStore::open(&PathBuf::from(db_path))?;
     let state = AppState::new(store);
