@@ -58,6 +58,10 @@
 		creating = false;
 		pots = [...pots, { ...pot, balance: '0' }];
 	}
+
+	function removePot(id: string) {
+		pots = pots.filter((pot) => pot.id !== id);
+	}
 </script>
 
 <div class="flex flex-col gap-4">
@@ -101,7 +105,7 @@
 		{:else}
 			<div class="flex flex-col gap-2.5 lg:grid lg:grid-cols-2 lg:gap-4 xl:grid-cols-3">
 				{#each pots as pot (pot.id)}
-					<PotCard {pot} onallocated={replacePot} />
+					<PotCard {pot} onallocated={replacePot} ondeleted={removePot} />
 				{/each}
 			</div>
 		{/if}

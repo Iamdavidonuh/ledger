@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { PotWithBalance } from '$lib/api';
+	import { api, ApiError, type PotWithBalance } from '$lib/api';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Button } from '$lib/components/ui/button';
 	import { Progress } from '$lib/components/ui/progress';
@@ -8,13 +8,29 @@
 
 	let {
 		pot,
-		onallocated
+		onallocated,
+		ondeleted
 	}: {
 		pot: PotWithBalance;
 		onallocated: (updated: PotWithBalance) => void;
+		ondeleted: (id: string) => void;
 	} = $props();
 
-	let open = $state(false);
+	let mode = $state<'idle' | 'allocate' | 'delete'>('idle');
+	let deleting = $state(false);
+	let deleteError = $state<string | null>(null);
+
+	async function confirmDelete() {
+		deleting = true;
+		deleteError = null;
+		try {
+			await api.pots.delete(pot.id);
+			ondeleted(pot.id);
+		} catch (err) {
+			deleteError = err instanceof ApiError ? err.message : 'Could not delete this pot.';
+			deleting = false;
+		}
+	}
 </script>
 
 <Card>
@@ -32,19 +48,55 @@
 			{/if}
 		</div>
 
-		{#if open}
+		{#if mode === 'allocate'}
 			<AllocateForm
 				{pot}
 				onallocated={(updated) => {
-					open = false;
+					mode = 'idle';
 					onallocated(updated);
 				}}
-				oncancel={() => (open = false)}
+				oncancel={() => (mode = 'idle')}
 			/>
+		{:else if mode === 'delete'}
+			<div class="flex flex-col gap-3 rounded-xl border border-warn-border bg-warn-bg p-3">
+				<p class="text-sm text-warn-foreground">
+					Delete {pot.name}? {formatMoney(Number(pot.balance), pot.currency)} goes back to general savings, and
+					any entry tagged to it stays as it is, just untagged. This can't be undone.
+				</p>
+				{#if deleteError}
+					<p class="text-xs text-warn-foreground">{deleteError}</p>
+				{/if}
+				<div class="flex flex-wrap gap-3">
+					<Button variant="outline" size="sm" class="max-lg:h-11" disabled={deleting} onclick={confirmDelete}>
+						{deleting ? 'Deleting...' : 'Delete pot'}
+					</Button>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						class="max-lg:h-11"
+						disabled={deleting}
+						onclick={() => (mode = 'idle')}
+					>
+						Cancel
+					</Button>
+				</div>
+			</div>
 		{:else}
-			<Button variant="outline" size="sm" class="self-start max-lg:h-11" onclick={() => (open = true)}>
-				Add money
-			</Button>
+			<div class="flex flex-wrap gap-3">
+				<Button variant="outline" size="sm" class="self-start max-lg:h-11" onclick={() => (mode = 'allocate')}>
+					Add money
+				</Button>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					class="self-start max-lg:h-11 text-muted"
+					onclick={() => (mode = 'delete')}
+				>
+					Delete
+				</Button>
+			</div>
 		{/if}
 	</CardContent>
 </Card>

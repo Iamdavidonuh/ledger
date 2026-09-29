@@ -76,6 +76,10 @@ function patch<T>(path: string, body: unknown): Promise<T> {
 	return request<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
 }
 
+function del<T>(path: string): Promise<T> {
+	return request<T>(path, { method: 'DELETE' });
+}
+
 // Multipart upload: no content-type header set manually, so the browser
 // fills in the multipart boundary itself. request() always sets JSON's
 // content-type, so this bypasses it rather than reusing it.
@@ -114,7 +118,8 @@ export const api = {
 		list: () => get<PotWithBalance[]>('/pots'),
 		get: (id: string) => get<PotWithBalance>(`/pots/${id}`),
 		open: (req: OpenPotRequest) => post<Pot>('/pots', req),
-		allocate: (id: string, req: AllocateRequest) => post<PotWithBalance>(`/pots/${id}/allocations`, req)
+		allocate: (id: string, req: AllocateRequest) => post<PotWithBalance>(`/pots/${id}/allocations`, req),
+		delete: (id: string) => del<void>(`/pots/${id}`)
 	},
 	transfers: {
 		create: (req: TransferRequest) => post<TransferResponse>('/transfers', req)
