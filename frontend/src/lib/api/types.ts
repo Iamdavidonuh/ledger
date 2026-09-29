@@ -126,12 +126,11 @@ export interface UpdateValueRequest {
 	date: string;
 }
 
-// Import feature (docs/superpowers/specs/2026-09-27-import.md). Backend
-// doesn't exist yet as of writing this -- these mirror the finalized spec,
-// not running code, so field names/casing may need reconciling once the
-// API is built. Row kind is a discriminated union on `kind` since a Normal
-// and a RevertedCandidate row genuinely carry different fields; accessing
-// a RevertedCandidate-only field on a Normal row shouldn't type-check.
+// Import feature (docs/superpowers/specs/2026-09-27-import.md). Row kind is
+// a discriminated union on `kind`, matching the backend's `RowDetail` enum:
+// a Normal row carries the statement line's description, bank state and
+// category, a RevertedCandidate row carries none of them, and accessing one
+// on the other shouldn't type-check.
 
 export type BankType = 'BankA' | 'BankB';
 
@@ -165,13 +164,18 @@ interface ImportQueueRowBase {
 	time: string | null;
 	amount: string;
 	currency: string;
-	bank_state: BankState;
 }
 
-export interface NormalQueueRow extends ImportQueueRowBase {
+// A Normal row as stored, without any of the review data computed for
+// GET /imports/:id/queue. PATCH /imports/:id/queue/:row_id returns this.
+export interface PatchedQueueRow extends ImportQueueRowBase {
 	kind: 'Normal';
 	description: string;
+	bank_state: BankState;
 	category: string | null;
+}
+
+export interface NormalQueueRow extends PatchedQueueRow {
 	suspicious: boolean;
 	matched_entry_ids: string[];
 	matched_queue_row_ids: string[];
@@ -184,22 +188,6 @@ export interface RevertedCandidateQueueRow extends ImportQueueRowBase {
 }
 
 export type ImportQueueRow = NormalQueueRow | RevertedCandidateQueueRow;
-
-// PATCH /imports/:id/queue/:row_id returns the bare queue row as stored --
-// not the QueueRowView shape above (no suspicious/matched_*/suggested_*
-// fields; those are only computed for GET /imports/:id/queue).
-export interface PatchedQueueRow {
-	id: string;
-	import_id: string;
-	kind: 'Normal' | 'RevertedCandidate';
-	date: string;
-	time: string | null;
-	amount: string;
-	currency: string;
-	description: string;
-	bank_state: BankState;
-	category: string | null;
-}
 
 export interface ImportResult {
 	import_id: string;

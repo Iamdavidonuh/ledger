@@ -131,6 +131,7 @@ export const api = {
 		},
 		queue: (id: string) => get<ImportQueueRow[]>(`/imports/${id}/queue`),
 		acceptAll: (id: string) => post<AcceptAllResult>(`/imports/${id}/queue/accept-all`),
+		discardAll: (id: string) => post<{ discarded: number }>(`/imports/${id}/queue/discard-all`),
 		accept: (id: string, rowId: string, req?: AcceptQueueRowRequest) =>
 			post<Entry>(`/imports/${id}/queue/${rowId}/accept`, req ?? {}),
 		acceptAsTransfer: (id: string, rowId: string, req: AcceptAsTransferRequest) =>

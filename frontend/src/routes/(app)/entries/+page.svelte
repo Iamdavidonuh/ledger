@@ -19,6 +19,12 @@
 	const selectedAccount = $derived(accounts.find((a) => a.id === selectedAccountId));
 	const sortedEntries = $derived([...entries].sort((a, b) => b.date.localeCompare(a.date)));
 
+	// A voided entry and a reverted one both stop counting toward balances, so
+	// both are dimmed; a pending one still counts but is not settled yet.
+	function isDimmed(entry: Entry): boolean {
+		return entry.voided_reason !== null || entry.bank_state === 'reverted';
+	}
+
 	onMount(async () => {
 		try {
 			accounts = await api.accounts.list();
@@ -96,6 +102,7 @@
 			class="rounded-xl border border-border bg-card p-3 text-sm font-semibold"
 			bind:value={selectedAccountId}
 			onchange={loadEntries}
+			aria-label="Account"
 		>
 			{#each accounts as account (account.id)}
 				<option value={account.id}>{account.name} ({account.currency})</option>
@@ -115,16 +122,21 @@
 		{:else}
 			<div class="flex flex-col gap-2.5">
 				{#each sortedEntries as entry (entry.id)}
-					<Card class={entry.voided_reason !== null ? 'opacity-50' : ''}>
+					<Card class={isDimmed(entry) ? 'opacity-50' : ''}>
 						<CardContent class="flex flex-col gap-2 pt-4">
 							<div class="flex items-start justify-between gap-2">
 								<div class="flex flex-col gap-1">
-									<div class="text-sm font-semibold {entry.voided_reason !== null ? 'line-through' : ''}">
+									<div class="text-sm font-semibold {isDimmed(entry) ? 'line-through' : ''}">
 										{entry.description}
 									</div>
 									<div class="text-xs text-muted">{entry.date}</div>
-									{#if entry.category || entry.tags.length > 0}
+									{#if entry.bank_state !== 'completed' || entry.category || entry.tags.length > 0}
 										<div class="flex flex-wrap gap-1.5">
+											{#if entry.bank_state === 'pending'}
+												<Badge variant="warning">Pending</Badge>
+											{:else if entry.bank_state === 'reverted'}
+												<Badge>Reverted</Badge>
+											{/if}
 											{#if entry.category}
 												<Badge>{entry.category}</Badge>
 											{/if}
