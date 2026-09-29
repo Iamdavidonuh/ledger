@@ -762,6 +762,12 @@ impl LedgerStore for SqliteStore {
             .collect()
     }
 
+    fn delete_pot(&mut self, id: PotId) -> Result<(), LedgerError> {
+        self.conn
+            .execute("DELETE FROM pots WHERE id = ?1", [id.to_string()])?;
+        Ok(())
+    }
+
     fn save_allocation(&mut self, allocation: Allocation) -> Result<(), LedgerError> {
         self.conn.execute(
             "INSERT INTO allocations (id, pot_id, amount, date, note)
@@ -805,6 +811,14 @@ impl LedgerStore for SqliteStore {
                 })
             })
             .collect()
+    }
+
+    fn delete_allocations_for_pot(&mut self, pot_id: PotId) -> Result<(), LedgerError> {
+        self.conn.execute(
+            "DELETE FROM allocations WHERE pot_id = ?1",
+            [pot_id.to_string()],
+        )?;
+        Ok(())
     }
 
     // Unlike every other save_* method, this is a plain INSERT with no
@@ -1723,6 +1737,66 @@ mod tests {
         };
         store.save_allocation(allocation.clone()).unwrap();
         assert_eq!(store.allocations_for_pot(pot.id), Ok(vec![allocation]));
+    }
+
+    #[test]
+    fn deleting_a_pot_removes_it_from_all_pots() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let pot = Pot {
+            id: PotId::generate(),
+            name: "A".to_string(),
+            currency: Currency::new("EUR").unwrap(),
+            target: None,
+            priority: None,
+        };
+        store.save_pot(pot.clone()).unwrap();
+        store.delete_pot(pot.id).unwrap();
+        assert_eq!(store.get_pot(pot.id), Ok(None));
+        assert_eq!(store.all_pots().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn deleting_a_pots_allocations_leaves_other_pots_untouched() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let eur = Currency::new("EUR").unwrap();
+        let pot = Pot {
+            id: PotId::generate(),
+            name: "A".to_string(),
+            currency: eur.clone(),
+            target: None,
+            priority: None,
+        };
+        let other_pot = Pot {
+            id: PotId::generate(),
+            name: "B".to_string(),
+            currency: eur,
+            target: None,
+            priority: None,
+        };
+        store.save_pot(pot.clone()).unwrap();
+        store.save_pot(other_pot.clone()).unwrap();
+        store
+            .save_allocation(Allocation {
+                id: AllocationId::generate(),
+                pot_id: pot.id,
+                amount: dec!(100),
+                date: a_date(),
+                note: None,
+            })
+            .unwrap();
+        let kept = Allocation {
+            id: AllocationId::generate(),
+            pot_id: other_pot.id,
+            amount: dec!(50),
+            date: a_date(),
+            note: None,
+        };
+        store.save_allocation(kept.clone()).unwrap();
+
+        store.delete_allocations_for_pot(pot.id).unwrap();
+
+        assert_eq!(store.allocations_for_pot(pot.id).unwrap().len(), 0);
+        assert_eq!(store.allocations_for_pot(other_pot.id), Ok(vec![kept]));
     }
 
     #[test]

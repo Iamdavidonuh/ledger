@@ -1,6 +1,7 @@
 use crate::error::{AppError, AppJson};
 use crate::state::AppState;
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
@@ -31,7 +32,7 @@ pub struct AllocateRequest {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/pots", post(open_pot).get(list_pots))
-        .route("/pots/:id", get(get_pot))
+        .route("/pots/:id", get(get_pot).delete(delete_pot))
         .route("/pots/:id/allocations", post(allocate))
 }
 
@@ -75,6 +76,16 @@ async fn get_pot(
         })
         .await?;
     Ok(Json(with_balance))
+}
+
+async fn delete_pot(
+    State(state): State<AppState>,
+    Path(id): Path<PotId>,
+) -> Result<StatusCode, AppError> {
+    state
+        .with_ledger(move |ledger| ledger.delete_pot(id))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn allocate(

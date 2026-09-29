@@ -154,4 +154,68 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
+
+    #[tokio::test]
+    async fn deleting_a_pot_through_the_api_returns_its_balance_to_general_savings() {
+        let state = test_state();
+        let eur = ledger_core::Currency::new("EUR").unwrap();
+        let pot = {
+            let mut ledger = state.ledger.lock().unwrap();
+            ledger
+                .open_account(
+                    "Checking",
+                    eur.clone(),
+                    ledger_core::AccountKind::Own,
+                    rust_decimal_macros::dec!(500),
+                )
+                .unwrap();
+            ledger
+                .open_pot("Trip fund", eur.clone(), None, None)
+                .unwrap()
+                .id
+        };
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pots/{pot}/allocations"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"amount": "200", "date": "2026-01-15"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pots/{pot}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        assert_eq!(
+            state.ledger.lock().unwrap().general_savings(&eur),
+            Ok(rust_decimal_macros::dec!(500))
+        );
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pots/{pot}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

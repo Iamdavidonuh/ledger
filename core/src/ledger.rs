@@ -270,6 +270,29 @@ impl<S: LedgerStore> Ledger<S> {
         Ok(pot)
     }
 
+    /// A pot's balance was never money "in" it, only money already in your
+    /// own accounts that this pot laid a claim on -- general_savings is
+    /// defined as own_accounts_total minus pots_total, so once the pot
+    /// itself is gone that claim is gone too and the money is back in
+    /// general savings with no transfer of any kind. What does need doing:
+    /// its allocation rows (which only make sense pointing at a pot) are
+    /// deleted, and any entry tagged to it, voided or reverted included, is
+    /// untagged rather than left pointing at a pot that no longer exists.
+    /// The entries themselves, and the real transactions they represent,
+    /// are untouched.
+    pub fn delete_pot(&mut self, pot_id: PotId) -> Result<(), LedgerError> {
+        self.store
+            .get_pot(pot_id)?
+            .ok_or(LedgerError::PotNotFound(pot_id))?;
+        for mut entry in self.store.entries_for_pot(pot_id)? {
+            entry.pot_id = None;
+            self.store.save_entry(entry)?;
+        }
+        self.store.delete_allocations_for_pot(pot_id)?;
+        self.store.delete_pot(pot_id)?;
+        Ok(())
+    }
+
     pub fn pot_balance(&self, pot_id: PotId) -> Result<Decimal, LedgerError> {
         self.store
             .get_pot(pot_id)?
@@ -959,6 +982,53 @@ mod tests {
         ledger.allocate_to_pot(pot.id, dec!(-40), a_date()).unwrap();
         assert_eq!(ledger.pot_balance(pot.id), Ok(dec!(60)));
         assert_eq!(ledger.general_savings(&eur), Ok(dec!(40)));
+    }
+
+    #[test]
+    fn deleting_an_allocated_pot_returns_its_balance_to_general_savings() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        ledger
+            .open_account("Checking", eur.clone(), AccountKind::Own, dec!(100))
+            .unwrap();
+        let pot = ledger
+            .open_pot("Emergency fund", eur.clone(), None, None)
+            .unwrap();
+        ledger.allocate_to_pot(pot.id, dec!(60), a_date()).unwrap();
+        assert_eq!(ledger.general_savings(&eur), Ok(dec!(40)));
+
+        ledger.delete_pot(pot.id).unwrap();
+
+        assert_eq!(ledger.general_savings(&eur), Ok(dec!(100)));
+        assert_eq!(ledger.pot(pot.id), Ok(None));
+    }
+
+    #[test]
+    fn deleting_a_pot_untags_its_entries_without_touching_them_otherwise() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let (checking, pot, income) = a_pot_holding_twenty(&mut ledger);
+
+        ledger.delete_pot(pot.id).unwrap();
+
+        let reloaded = ledger
+            .entries(checking.id)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.id == income.id)
+            .unwrap();
+        assert_eq!(reloaded.pot_id, None);
+        assert_eq!(reloaded.amount, dec!(50));
+        assert_eq!(reloaded.description, "Sold something");
+    }
+
+    #[test]
+    fn deleting_an_unknown_pot_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let unknown = PotId::generate();
+        assert_eq!(
+            ledger.delete_pot(unknown),
+            Err(LedgerError::PotNotFound(unknown))
+        );
     }
 
     #[test]

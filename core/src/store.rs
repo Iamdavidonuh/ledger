@@ -27,8 +27,10 @@ pub trait LedgerStore {
     fn save_pot(&mut self, pot: Pot) -> Result<(), LedgerError>;
     fn get_pot(&self, id: PotId) -> Result<Option<Pot>, LedgerError>;
     fn all_pots(&self) -> Result<Vec<Pot>, LedgerError>;
+    fn delete_pot(&mut self, id: PotId) -> Result<(), LedgerError>;
     fn save_allocation(&mut self, allocation: Allocation) -> Result<(), LedgerError>;
     fn allocations_for_pot(&self, pot_id: PotId) -> Result<Vec<Allocation>, LedgerError>;
+    fn delete_allocations_for_pot(&mut self, pot_id: PotId) -> Result<(), LedgerError>;
 
     fn save_valuation(&mut self, valuation: Valuation) -> Result<(), LedgerError>;
     fn valuations_for_account(&self, account_id: AccountId) -> Result<Vec<Valuation>, LedgerError>;
@@ -169,6 +171,11 @@ impl LedgerStore for InMemoryStore {
         Ok(self.pots.values().cloned().collect())
     }
 
+    fn delete_pot(&mut self, id: PotId) -> Result<(), LedgerError> {
+        self.pots.remove(&id);
+        Ok(())
+    }
+
     fn save_allocation(&mut self, allocation: Allocation) -> Result<(), LedgerError> {
         self.allocations.insert(allocation.id, allocation);
         Ok(())
@@ -181,6 +188,11 @@ impl LedgerStore for InMemoryStore {
             .filter(|a| a.pot_id == pot_id)
             .cloned()
             .collect())
+    }
+
+    fn delete_allocations_for_pot(&mut self, pot_id: PotId) -> Result<(), LedgerError> {
+        self.allocations.retain(|_, a| a.pot_id != pot_id);
+        Ok(())
     }
 
     fn save_valuation(&mut self, valuation: Valuation) -> Result<(), LedgerError> {
