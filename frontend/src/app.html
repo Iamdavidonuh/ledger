@@ -10,6 +10,17 @@
 			href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Public+Sans:wght@400;500;600;700&display=swap"
 			rel="stylesheet"
 		/>
+		<!--
+			Runtime config, not a build-time constant: this app is a static SPA
+			(adapter-static), so there is no server process to inject env vars
+			into it at container start. /config.js is instead a plain static
+			file the deployment can overwrite before the app's own bundle ever
+			runs (see api/client.ts's use of window.__ENV__). The one checked
+			into this repo is the local-dev default and is safe to publish --
+			it names no real host, only the relative path the Vite dev proxy
+			already forwards to a local backend.
+		-->
+		<script src="/config.js"></script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

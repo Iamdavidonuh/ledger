@@ -8,6 +8,14 @@ declare global {
 		// interface PageState {}
 		// interface Platform {}
 	}
+
+	// Set by /config.js (see app.html), loaded before this app's own bundle
+	// runs. See api/client.ts.
+	interface Window {
+		__ENV__?: {
+			API_BASE_URL?: string;
+		};
+	}
 }
 
 export {};

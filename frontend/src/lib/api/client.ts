@@ -27,11 +27,13 @@ import type {
 	VoidRequest
 } from './types';
 
-// Same-origin '/api' prefix: the dev server proxies it to the Axum API
-// (vite.config.ts), and in production the ingress routes it to the API
-// container the same way, so this client never needs an absolute URL or
-// CORS on the API.
-const BASE = '/api';
+// A runtime value, not a build-time constant: this app is a static SPA
+// with no server process to inject config into it at deploy time, so the
+// deployed API's address comes from /config.js instead, a plain static
+// file a deployment can overwrite before this bundle ever runs (see
+// app.html and app.d.ts). Locally, config.js's default keeps this at
+// '/api', which the dev server proxies to the Axum API (vite.config.ts).
+const BASE = window.__ENV__?.API_BASE_URL ?? '/api';
 
 export class ApiError extends Error {
 	status: number;
