@@ -34,7 +34,7 @@ enum Removal {
 }
 
 /// Everything that taking one row out of its queue writes, worked out
-/// before the transaction opens so the closure only has to apply it.
+/// before the transaction opens so the apply step is a pure sequence of writes.
 struct RowRemoval {
     row_id: QueueRowId,
     match_ids: Vec<MatchId>,
@@ -44,16 +44,20 @@ struct RowRemoval {
 }
 
 impl RowRemoval {
-    fn apply<S: LedgerStore>(self, store: &mut S) -> Result<(), LedgerError> {
-        self.match_ids
-            .into_iter()
-            .try_for_each(|id| store.delete_queue_row_match(id))?;
-        if let Some(entry_id) = self.repoint_to {
-            store.repoint_queue_row_matches(self.row_id, entry_id)?;
+    async fn apply<S: LedgerStore>(self, store: &mut S) -> Result<(), LedgerError> {
+        for id in self.match_ids {
+            store.delete_queue_row_match(id).await?;
         }
-        store.delete_queue_row(self.row_id)?;
-        self.completed
-            .map_or(Ok(()), |import| store.save_import(import))
+        if let Some(entry_id) = self.repoint_to {
+            store
+                .repoint_queue_row_matches(self.row_id, entry_id)
+                .await?;
+        }
+        store.delete_queue_row(self.row_id).await?;
+        if let Some(import) = self.completed {
+            store.save_import(import).await?;
+        }
+        Ok(())
     }
 }
 
@@ -134,30 +138,35 @@ impl CategoryHistory {
 }
 
 impl<S: LedgerStore> Ledger<S> {
-    pub fn imports(&self) -> Result<Vec<Import>, LedgerError> {
-        self.store.all_imports()
+    pub async fn imports(&mut self) -> Result<Vec<Import>, LedgerError> {
+        self.store.all_imports().await
     }
 
-    pub fn import(&self, id: ImportId) -> Result<Option<Import>, LedgerError> {
-        self.store.get_import(id)
+    pub async fn import(&mut self, id: ImportId) -> Result<Option<Import>, LedgerError> {
+        self.store.get_import(id).await
     }
 
-    pub fn incomplete_import_for_account(
-        &self,
+    pub async fn incomplete_import_for_account(
+        &mut self,
         account_id: AccountId,
     ) -> Result<Option<Import>, LedgerError> {
-        self.store.incomplete_import_for_account(account_id)
+        self.store.incomplete_import_for_account(account_id).await
     }
 
     /// The import's queue in date-then-time order. A Normal row gets a
     /// fresh category suggestion; a RevertedCandidate row gets its
     /// suggested entry, if it has one.
-    pub fn import_queue(&self, import_id: ImportId) -> Result<Vec<QueueRowView>, LedgerError> {
-        let import = self.find_import(import_id)?;
-        let matches = MatchIndex::new(self.store.queue_row_matches_for_import(import_id)?);
-        let history = self.category_history(import.account_id)?;
+    pub async fn import_queue(
+        &mut self,
+        import_id: ImportId,
+    ) -> Result<Vec<QueueRowView>, LedgerError> {
+        let import = self.find_import(import_id).await?;
+        let matches =
+            MatchIndex::new(self.store.queue_row_matches_for_import(import_id).await?);
+        let history = self.category_history(import.account_id).await?;
         self.store
-            .queue_rows_for_import(import_id)?
+            .queue_rows_for_import(import_id)
+            .await?
             .into_iter()
             .map(|row| {
                 let review = match &row.detail {
@@ -179,7 +188,7 @@ impl<S: LedgerStore> Ledger<S> {
     /// Saves an already-built import, its queue rows and their match rows
     /// in one transaction. Re-checks for an incomplete import first, since
     /// parsing happens between the upload handler's own check and this call.
-    pub fn stage_import(
+    pub async fn stage_import(
         &mut self,
         import: Import,
         queue_rows: Vec<ImportQueueRow>,
@@ -187,44 +196,62 @@ impl<S: LedgerStore> Ledger<S> {
     ) -> Result<(), LedgerError> {
         if self
             .store
-            .incomplete_import_for_account(import.account_id)?
+            .incomplete_import_for_account(import.account_id)
+            .await?
             .is_some()
         {
             return Err(LedgerError::IncompleteImportExists);
         }
-        self.store.transaction(|store| {
-            store.save_import(import)?;
-            queue_rows
-                .into_iter()
-                .try_for_each(|row| store.save_queue_row(row))?;
-            matches
-                .into_iter()
-                .try_for_each(|m| store.save_queue_row_match(m))
-        })
+        self.store.begin().await?;
+        let result = async {
+            self.store.save_import(import).await?;
+            for row in queue_rows {
+                self.store.save_queue_row(row).await?;
+            }
+            for m in matches {
+                self.store.save_queue_row_match(m).await?;
+            }
+            Ok(())
+        }
+        .await;
+        match result {
+            Ok(()) => self.store.commit().await,
+            Err(e) => { self.store.rollback().await?; Err(e) }
+        }
     }
 
     /// Accepts a Normal row into the ledger as an imported entry. Category:
     /// the one passed here, else the one saved on the row, else a fresh
     /// suggestion, else none.
-    pub fn accept_queue_row(
+    pub async fn accept_queue_row(
         &mut self,
         import_id: ImportId,
         row_id: QueueRowId,
         category: Option<String>,
     ) -> Result<Entry, LedgerError> {
-        let (import, row, detail) = self.find_normal_row(import_id, row_id)?;
+        let (import, row, detail) = self.find_normal_row(import_id, row_id).await?;
         let category = match category.or_else(|| detail.category.clone()) {
             Some(category) => Some(category),
-            None => self.suggest_category(import.account_id, &detail.description)?,
+            None => {
+                self.suggest_category(import.account_id, &detail.description)
+                    .await?
+            }
         };
-        let account = self.account_of(&import)?;
+        let account = self.account_of(&import).await?;
         let entry = Self::imported_entry(&account, &row, &NormalDetail { category, ..detail });
         let removal =
-            self.plan_removal(&import, row_id, Removal::Accepted { entry_id: entry.id })?;
-        self.store.transaction(|store| {
-            store.save_entry(entry.clone())?;
-            removal.apply(store)
-        })?;
+            self.plan_removal(&import, row_id, Removal::Accepted { entry_id: entry.id })
+                .await?;
+        self.store.begin().await?;
+        let result = async {
+            self.store.save_entry(entry.clone()).await?;
+            removal.apply(&mut self.store).await
+        }
+        .await;
+        match result {
+            Ok(()) => self.store.commit().await?,
+            Err(e) => { self.store.rollback().await?; return Err(e); }
+        }
         Ok(entry)
     }
 
@@ -232,14 +259,14 @@ impl<S: LedgerStore> Ledger<S> {
     /// account. The row's sign picks the direction: money leaving this
     /// account makes it the sender, money arriving makes it the receiver.
     /// Returns (sent, received) entries, as `transfer` does.
-    pub fn accept_queue_row_as_transfer(
+    pub async fn accept_queue_row_as_transfer(
         &mut self,
         import_id: ImportId,
         row_id: QueueRowId,
         other_account_id: AccountId,
         other_amount: Option<Decimal>,
     ) -> Result<(Entry, Entry), LedgerError> {
-        let (import, row, detail) = self.find_normal_row(import_id, row_id)?;
+        let (import, row, detail) = self.find_normal_row(import_id, row_id).await?;
         let this_side = TransferLeg::new(import.account_id, row.amount.abs());
         let other_side =
             TransferLeg::new(other_account_id, other_amount.unwrap_or(this_side.amount));
@@ -250,86 +277,111 @@ impl<S: LedgerStore> Ledger<S> {
             (this_side, other_side)
         };
         let transfer = Transfer::new(from, to, row.date, detail.description);
-        let (out_entry, in_entry) = self.build_transfer(&transfer)?;
+        let (out_entry, in_entry) = self.build_transfer(&transfer).await?;
         let this_account_entry_id = if incoming { in_entry.id } else { out_entry.id };
-        let removal = self.plan_removal(
-            &import,
-            row_id,
-            Removal::Accepted {
-                entry_id: this_account_entry_id,
-            },
-        )?;
-        self.store.transaction(|store| {
-            store.save_entry(out_entry.clone())?;
-            store.save_entry(in_entry.clone())?;
-            removal.apply(store)
-        })?;
+        let removal = self
+            .plan_removal(
+                &import,
+                row_id,
+                Removal::Accepted {
+                    entry_id: this_account_entry_id,
+                },
+            )
+            .await?;
+        self.store.begin().await?;
+        let result = async {
+            self.store.save_entry(out_entry.clone()).await?;
+            self.store.save_entry(in_entry.clone()).await?;
+            removal.apply(&mut self.store).await
+        }
+        .await;
+        match result {
+            Ok(()) => self.store.commit().await?,
+            Err(e) => { self.store.rollback().await?; return Err(e); }
+        }
         Ok((out_entry, in_entry))
     }
 
     /// Confirms a RevertedCandidate row's suggestion: marks the suggested
     /// entry Reverted (or leaves it as is, if it already is) and removes
     /// the row either way.
-    pub fn resolve_reverted_candidate(
+    pub async fn resolve_reverted_candidate(
         &mut self,
         import_id: ImportId,
         row_id: QueueRowId,
     ) -> Result<Entry, LedgerError> {
-        let (import, _) = self.find_reverted_candidate(import_id, row_id)?;
+        let (import, _) = self.find_reverted_candidate(import_id, row_id).await?;
         let entry_id = self
-            .own_matches(row_id)?
+            .own_matches(row_id)
+            .await?
             .into_iter()
             .find_map(|m| match m.target {
                 MatchTarget::Entry { entry_id } => Some(entry_id),
                 MatchTarget::QueueRow { .. } => None,
             })
             .ok_or(LedgerError::NoSuggestedMatch)?;
-        let (entry, needs_save) = self.prepare_revert(entry_id)?;
-        let removal = self.plan_removal(&import, row_id, Removal::Dropped)?;
-        self.store.transaction(|store| {
+        let (entry, needs_save) = self.prepare_revert(entry_id).await?;
+        let removal = self.plan_removal(&import, row_id, Removal::Dropped).await?;
+        self.store.begin().await?;
+        let result = async {
             if needs_save {
-                store.save_entry(entry.clone())?;
+                self.store.save_entry(entry.clone()).await?;
             }
-            removal.apply(store)
-        })?;
+            removal.apply(&mut self.store).await
+        }
+        .await;
+        match result {
+            Ok(()) => self.store.commit().await?,
+            Err(e) => { self.store.rollback().await?; return Err(e); }
+        }
         Ok(entry)
     }
 
     /// Removes a row of either kind without applying it, along with every
     /// match row that references it on either side.
-    pub fn discard_queue_row(
+    pub async fn discard_queue_row(
         &mut self,
         import_id: ImportId,
         row_id: QueueRowId,
     ) -> Result<(), LedgerError> {
-        let (import, _) = self.find_queue_row(import_id, row_id)?;
-        let removal = self.plan_removal(&import, row_id, Removal::Dropped)?;
-        self.store.transaction(|store| removal.apply(store))
+        let (import, _) = self.find_queue_row(import_id, row_id).await?;
+        let removal = self.plan_removal(&import, row_id, Removal::Dropped).await?;
+        self.store.begin().await?;
+        let result = removal.apply(&mut self.store).await;
+        match result {
+            Ok(()) => self.store.commit().await,
+            Err(e) => { self.store.rollback().await?; Err(e) }
+        }
     }
 
     /// Removes every row of the import, of either kind, without applying
     /// any of them. Returns how many rows were discarded.
-    pub fn discard_import(&mut self, import_id: ImportId) -> Result<usize, LedgerError> {
-        let import = self.find_import(import_id)?;
-        let rows = self.store.queue_rows_for_import(import_id)?;
+    pub async fn discard_import(&mut self, import_id: ImportId) -> Result<usize, LedgerError> {
+        let import = self.find_import(import_id).await?;
+        let rows = self.store.queue_rows_for_import(import_id).await?;
         let match_ids: Vec<MatchId> = self
             .store
-            .queue_row_matches_for_import(import_id)?
+            .queue_row_matches_for_import(import_id)
+            .await?
             .into_iter()
             .map(|m| m.id)
             .collect();
         let discarded = rows.len();
-        self.store.transaction(|store| {
-            match_ids
-                .into_iter()
-                .try_for_each(|id| store.delete_queue_row_match(id))?;
-            rows.into_iter()
-                .try_for_each(|row| store.delete_queue_row(row.id))?;
-            store.save_import(Import {
-                completed: true,
-                ..import
-            })
-        })?;
+        self.store.begin().await?;
+        let result = async {
+            for id in match_ids {
+                self.store.delete_queue_row_match(id).await?;
+            }
+            for row in &rows {
+                self.store.delete_queue_row(row.id).await?;
+            }
+            self.store.save_import(Import { completed: true, ..import }).await
+        }
+        .await;
+        match result {
+            Ok(()) => self.store.commit().await?,
+            Err(e) => { self.store.rollback().await?; return Err(e); }
+        }
         Ok(discarded)
     }
 
@@ -337,13 +389,17 @@ impl<S: LedgerStore> Ledger<S> {
     /// Normal row or any RevertedCandidate row is still in the queue. Each
     /// row's category is its own saved one, else a suggestion from entries
     /// already in the ledger (not from rows accepted earlier in this call).
-    pub fn bulk_accept_import(&mut self, import_id: ImportId) -> Result<usize, LedgerError> {
-        let import = self.find_import(import_id)?;
-        let matches = MatchIndex::new(self.store.queue_row_matches_for_import(import_id)?);
+    pub async fn bulk_accept_import(
+        &mut self,
+        import_id: ImportId,
+    ) -> Result<usize, LedgerError> {
+        let import = self.find_import(import_id).await?;
+        let matches =
+            MatchIndex::new(self.store.queue_row_matches_for_import(import_id).await?);
 
         let mut clean = Vec::new();
         let (mut suspicious_count, mut reverted_candidate_count) = (0, 0);
-        for row in self.store.queue_rows_for_import(import_id)? {
+        for row in self.store.queue_rows_for_import(import_id).await? {
             match &row.detail {
                 RowDetail::RevertedCandidate => reverted_candidate_count += 1,
                 RowDetail::Normal(_) if matches.is_suspicious(row.id) => suspicious_count += 1,
@@ -357,8 +413,8 @@ impl<S: LedgerStore> Ledger<S> {
             });
         }
 
-        let account = self.account_of(&import)?;
-        let history = self.category_history(import.account_id)?;
+        let account = self.account_of(&import).await?;
+        let history = self.category_history(import.account_id).await?;
         let (row_ids, entries): (Vec<QueueRowId>, Vec<Entry>) = clean
             .into_iter()
             .map(|(row, detail)| {
@@ -373,36 +429,38 @@ impl<S: LedgerStore> Ledger<S> {
             .unzip();
 
         let accepted = entries.len();
-        self.store.transaction(|store| {
-            entries
-                .into_iter()
-                .try_for_each(|entry| store.save_entry(entry))?;
-            row_ids
-                .into_iter()
-                .try_for_each(|id| store.delete_queue_row(id))?;
-            store.save_import(Import {
-                completed: true,
-                ..import
-            })
-        })?;
+        self.store.begin().await?;
+        let result = async {
+            for entry in entries {
+                self.store.save_entry(entry).await?;
+            }
+            for id in row_ids {
+                self.store.delete_queue_row(id).await?;
+            }
+            self.store.save_import(Import { completed: true, ..import }).await
+        }
+        .await;
+        match result {
+            Ok(()) => self.store.commit().await?,
+            Err(e) => { self.store.rollback().await?; return Err(e); }
+        }
         Ok(accepted)
     }
 
     /// Sets (or clears) the category a Normal row will be accepted with,
     /// without accepting it.
-    pub fn set_queue_row_category(
+    pub async fn set_queue_row_category(
         &mut self,
         import_id: ImportId,
         row_id: QueueRowId,
         category: Option<String>,
     ) -> Result<ImportQueueRow, LedgerError> {
-        let (_, row, detail) = self.find_normal_row(import_id, row_id)?;
+        let (_, row, detail) = self.find_normal_row(import_id, row_id).await?;
         let updated = ImportQueueRow {
             detail: RowDetail::Normal(NormalDetail { category, ..detail }),
             ..row
         };
-        self.store
-            .transaction(|store| store.save_queue_row(updated.clone()))?;
+        self.store.save_queue_row(updated.clone()).await?;
         Ok(updated)
     }
 
@@ -423,10 +481,14 @@ impl<S: LedgerStore> Ledger<S> {
     /// Returns the entry to save and whether it needs saving: an entry
     /// that is already Reverted comes back unchanged with `false`, and has
     /// already left any pot's balance, so it skips the pot check.
-    fn prepare_revert(&self, entry_id: EntryId) -> Result<(Entry, bool), LedgerError> {
+    async fn prepare_revert(
+        &mut self,
+        entry_id: EntryId,
+    ) -> Result<(Entry, bool), LedgerError> {
         let mut entry = self
             .store
-            .get_entry(entry_id)?
+            .get_entry(entry_id)
+            .await?
             .ok_or(LedgerError::EntryNotFound(entry_id))?;
         if entry.is_voided() {
             return Err(LedgerError::AlreadyVoided);
@@ -437,7 +499,7 @@ impl<S: LedgerStore> Ledger<S> {
         // Reverting drops the entry out of entries_tagged_to_pot exactly
         // like voiding does, so it gets the same never-below-zero check.
         if let Some(pot_id) = entry.pot_id {
-            if self.pot_balance(pot_id)? - entry.amount < Decimal::ZERO {
+            if self.pot_balance(pot_id).await? - entry.amount < Decimal::ZERO {
                 return Err(LedgerError::PotWouldGoNegative);
             }
         }
@@ -445,45 +507,54 @@ impl<S: LedgerStore> Ledger<S> {
         Ok((entry, true))
     }
 
-    fn category_history(&self, account_id: AccountId) -> Result<CategoryHistory, LedgerError> {
+    async fn category_history(
+        &mut self,
+        account_id: AccountId,
+    ) -> Result<CategoryHistory, LedgerError> {
         Ok(CategoryHistory::new(
-            self.store.entries_for_account(account_id)?,
+            self.store.entries_for_account(account_id).await?,
         ))
     }
 
     /// A category every categorised entry in this account with exactly this
     /// description agrees on.
-    fn suggest_category(
-        &self,
+    async fn suggest_category(
+        &mut self,
         account_id: AccountId,
         description: &str,
     ) -> Result<Option<String>, LedgerError> {
-        Ok(self.category_history(account_id)?.suggestion(description))
+        Ok(self
+            .category_history(account_id)
+            .await?
+            .suggestion(description))
     }
 
-    fn account_of(&self, import: &Import) -> Result<Account, LedgerError> {
+    async fn account_of(&mut self, import: &Import) -> Result<Account, LedgerError> {
         self.store
-            .get_account(import.account_id)?
+            .get_account(import.account_id)
+            .await?
             .ok_or(LedgerError::AccountNotFound(import.account_id))
     }
 
-    fn find_import(&self, import_id: ImportId) -> Result<Import, LedgerError> {
+    async fn find_import(&mut self, import_id: ImportId) -> Result<Import, LedgerError> {
         self.store
-            .get_import(import_id)?
+            .get_import(import_id)
+            .await?
             .ok_or(LedgerError::ImportNotFound(import_id))
     }
 
     /// The import and one of its rows, of either kind. A row that exists but
     /// belongs to a different import is reported exactly like a missing one.
-    fn find_queue_row(
-        &self,
+    async fn find_queue_row(
+        &mut self,
         import_id: ImportId,
         row_id: QueueRowId,
     ) -> Result<(Import, ImportQueueRow), LedgerError> {
-        let import = self.find_import(import_id)?;
+        let import = self.find_import(import_id).await?;
         let row = self
             .store
-            .get_queue_row(row_id)?
+            .get_queue_row(row_id)
+            .await?
             .filter(|r| r.import_id == import_id)
             .ok_or(LedgerError::QueueRowNotFound(row_id))?;
         Ok((import, row))
@@ -491,12 +562,12 @@ impl<S: LedgerStore> Ledger<S> {
 
     /// Like `find_queue_row`, but only a Normal row will do, and its
     /// Normal-only details come back with it.
-    fn find_normal_row(
-        &self,
+    async fn find_normal_row(
+        &mut self,
         import_id: ImportId,
         row_id: QueueRowId,
     ) -> Result<(Import, ImportQueueRow, NormalDetail), LedgerError> {
-        let (import, row) = self.find_queue_row(import_id, row_id)?;
+        let (import, row) = self.find_queue_row(import_id, row_id).await?;
         let detail = row
             .normal()
             .cloned()
@@ -505,12 +576,12 @@ impl<S: LedgerStore> Ledger<S> {
     }
 
     /// Like `find_queue_row`, but only a RevertedCandidate row will do.
-    fn find_reverted_candidate(
-        &self,
+    async fn find_reverted_candidate(
+        &mut self,
         import_id: ImportId,
         row_id: QueueRowId,
     ) -> Result<(Import, ImportQueueRow), LedgerError> {
-        let (import, row) = self.find_queue_row(import_id, row_id)?;
+        let (import, row) = self.find_queue_row(import_id, row_id).await?;
         if !row.is_reverted_candidate() {
             return Err(LedgerError::WrongQueueRowKind);
         }
@@ -519,27 +590,43 @@ impl<S: LedgerStore> Ledger<S> {
 
     /// Match rows where this row is the origin (it is the suspicious one or
     /// the candidate), not where a sibling points at it.
-    fn own_matches(&self, row_id: QueueRowId) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
+    async fn own_matches(
+        &mut self,
+        row_id: QueueRowId,
+    ) -> Result<Vec<ImportQueueRowMatch>, LedgerError> {
         Ok(self
             .store
-            .queue_row_matches_referencing(row_id)?
+            .queue_row_matches_referencing(row_id)
+            .await?
             .into_iter()
             .filter(|m| m.queue_row_id == row_id)
             .collect())
     }
 
     /// Works out what taking `row_id` out of `import`'s queue writes.
-    fn plan_removal(
-        &self,
+    async fn plan_removal(
+        &mut self,
         import: &Import,
         row_id: QueueRowId,
         how: Removal,
     ) -> Result<RowRemoval, LedgerError> {
         let (matches, repoint_to) = match how {
-            Removal::Accepted { entry_id } => (self.own_matches(row_id)?, Some(entry_id)),
-            Removal::Dropped => (self.store.queue_row_matches_referencing(row_id)?, None),
+            Removal::Accepted { entry_id } => {
+                (self.own_matches(row_id).await?, Some(entry_id))
+            }
+            Removal::Dropped => (
+                self.store
+                    .queue_row_matches_referencing(row_id)
+                    .await?,
+                None,
+            ),
         };
-        let is_last_row = self.store.queue_rows_for_import(import.id)?.len() <= 1;
+        let is_last_row = self
+            .store
+            .queue_rows_for_import(import.id)
+            .await?
+            .len()
+            <= 1;
         Ok(RowRemoval {
             row_id,
             match_ids: matches.into_iter().map(|m| m.id).collect(),

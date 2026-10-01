@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppJson};
-use crate::state::AppState;
+use crate::state::WithLedger;
 use axum::extract::{Path, Query, State};
 use axum::routing::{patch, post};
 use axum::{Json, Router};
@@ -66,50 +66,52 @@ pub struct VoidRequest {
     pub reason: String,
 }
 
-pub fn router() -> Router<AppState> {
+pub fn router<S: WithLedger>() -> Router<S> {
     Router::new()
-        .route("/entries", post(record_entry).get(list_entries))
-        .route("/entries/:id", patch(update_metadata))
-        .route("/entries/:id/amount", patch(edit_amount))
-        .route("/entries/:id/void", post(void_entry))
-        .route("/entries/:id/confirm", post(confirm_entry))
+        .route("/entries", post(record_entry::<S>).get(list_entries::<S>))
+        .route("/entries/:id", patch(update_metadata::<S>))
+        .route("/entries/:id/amount", patch(edit_amount::<S>))
+        .route("/entries/:id/void", post(void_entry::<S>))
+        .route("/entries/:id/confirm", post(confirm_entry::<S>))
 }
 
-async fn record_entry(
-    State(state): State<AppState>,
+async fn record_entry<S: WithLedger>(
+    State(state): State<S>,
     AppJson(req): AppJson<RecordEntryRequest>,
 ) -> Result<Json<Entry>, AppError> {
     require_non_negative(req.amount)?;
     let entry = state
-        .with_ledger(move |ledger| {
+        .with_ledger(move |ledger| Box::pin(async move {
             ledger.record_manual_entry(
                 req.account_id,
                 req.date,
                 req.kind.signed(req.amount),
                 &req.description,
-            )
-        })
+            ).await
+        }))
         .await?;
     Ok(Json(entry))
 }
 
-async fn list_entries(
-    State(state): State<AppState>,
+async fn list_entries<S: WithLedger>(
+    State(state): State<S>,
     Query(q): Query<AccountIdQuery>,
 ) -> Result<Json<Vec<Entry>>, AppError> {
     let entries = state
-        .with_ledger(move |ledger| ledger.entries(q.account_id))
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.entries(q.account_id).await
+        }))
         .await?;
     Ok(Json(entries))
 }
 
-async fn update_metadata(
-    State(state): State<AppState>,
+async fn update_metadata<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<EntryId>,
     AppJson(req): AppJson<UpdateEntryMetadataRequest>,
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
-        .with_ledger(move |ledger| {
+        .with_ledger(move |ledger| Box::pin(async move {
             ledger.update_entry_metadata(
                 id,
                 EntryMetadata {
@@ -118,41 +120,47 @@ async fn update_metadata(
                     note: req.note,
                     pot_id: req.pot_id,
                 },
-            )
-        })
+            ).await
+        }))
         .await?;
     Ok(Json(entry))
 }
 
-async fn edit_amount(
-    State(state): State<AppState>,
+async fn edit_amount<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<EntryId>,
     AppJson(req): AppJson<EditAmountRequest>,
 ) -> Result<Json<Entry>, AppError> {
     require_non_negative(req.amount)?;
     let entry = state
-        .with_ledger(move |ledger| ledger.edit_manual_entry_amount(id, req.kind.signed(req.amount)))
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.edit_manual_entry_amount(id, req.kind.signed(req.amount)).await
+        }))
         .await?;
     Ok(Json(entry))
 }
 
-async fn void_entry(
-    State(state): State<AppState>,
+async fn void_entry<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<EntryId>,
     AppJson(req): AppJson<VoidRequest>,
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
-        .with_ledger(move |ledger| ledger.void_entry(id, &req.reason))
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.void_entry(id, &req.reason).await
+        }))
         .await?;
     Ok(Json(entry))
 }
 
-async fn confirm_entry(
-    State(state): State<AppState>,
+async fn confirm_entry<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<EntryId>,
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
-        .with_ledger(move |ledger| ledger.confirm_entry(id))
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.confirm_entry(id).await
+        }))
         .await?;
     Ok(Json(entry))
 }
@@ -164,30 +172,31 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use ledger_core::{AccountKind, Currency, SqliteStore};
+    use ledger_core::{AccountKind, Currency};
     use tower::ServiceExt;
 
-    fn test_state() -> AppState {
-        AppState::new(SqliteStore::open_in_memory().unwrap())
+    fn test_state() -> crate::state::TestState {
+        crate::state::TestState::new()
     }
 
-    fn an_account(state: &AppState) -> AccountId {
+    async fn an_account(state: &crate::state::TestState) -> AccountId {
         state
             .ledger
             .lock()
-            .unwrap()
+            .await
             .open_account(
                 "Checking",
                 Currency::new("EUR").unwrap(),
                 AccountKind::Own,
                 rust_decimal_macros::dec!(0),
             )
+            .await
             .unwrap()
             .id
     }
 
     async fn post_json(
-        state: AppState,
+        state: crate::state::TestState,
         uri: &str,
         body: serde_json::Value,
     ) -> axum::response::Response {
@@ -207,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn recording_an_expense_stores_it_negative() {
         let state = test_state();
-        let account_id = an_account(&state);
+        let account_id = an_account(&state).await;
         let response = post_json(
             state,
             "/entries",
@@ -223,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn a_manually_recorded_entry_goes_into_the_ledger_and_moves_the_balance() {
         let state = test_state();
-        let account_id = an_account(&state);
+        let account_id = an_account(&state).await;
         let response = post_json(
             state.clone(),
             "/entries",
@@ -234,10 +243,10 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let recorded: Entry = serde_json::from_slice(&body).unwrap();
 
-        let ledger = state.ledger.lock().unwrap();
-        assert_eq!(ledger.entries(account_id).unwrap(), vec![recorded]);
+        let mut ledger = state.ledger.lock().await;
+        assert_eq!(ledger.entries(account_id).await.unwrap(), vec![recorded]);
         assert_eq!(
-            ledger.account_balance(account_id),
+            ledger.account_balance(account_id).await,
             Ok(rust_decimal_macros::dec!(75))
         );
     }
@@ -245,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn a_negative_amount_in_the_request_is_a_bad_request() {
         let state = test_state();
-        let account_id = an_account(&state);
+        let account_id = an_account(&state).await;
         let response = post_json(
             state,
             "/entries",
@@ -258,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn listing_entries_filters_by_account() {
         let state = test_state();
-        let a = an_account(&state);
+        let a = an_account(&state).await;
         post_json(
             state.clone(),
             "/entries",
@@ -282,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn editing_the_amount_of_a_confirmed_entry_is_unprocessable() {
         let state = test_state();
-        let account_id = an_account(&state);
+        let account_id = an_account(&state).await;
         let response = post_json(
             state.clone(),
             "/entries",
@@ -316,7 +325,7 @@ mod tests {
     #[tokio::test]
     async fn voiding_an_entry_then_editing_it_is_unprocessable() {
         let state = test_state();
-        let account_id = an_account(&state);
+        let account_id = an_account(&state).await;
         let response = post_json(
             state.clone(),
             "/entries",
@@ -350,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn metadata_can_be_set_then_cleared_back_to_none() {
         let state = test_state();
-        let account_id = an_account(&state);
+        let account_id = an_account(&state).await;
         let response = post_json(
             state.clone(),
             "/entries",

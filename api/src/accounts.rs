@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppJson};
-use crate::state::AppState;
+use crate::state::WithLedger;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -21,54 +21,53 @@ pub struct AccountWithBalance {
     pub balance: Decimal,
 }
 
-pub fn router() -> Router<AppState> {
+pub fn router<S: WithLedger>() -> Router<S> {
     Router::new()
-        .route("/accounts", post(create_account).get(list_accounts))
-        .route("/accounts/:id", get(get_account))
+        .route("/accounts", post(create_account::<S>).get(list_accounts::<S>))
+        .route("/accounts/:id", get(get_account::<S>))
 }
 
-async fn create_account(
-    State(state): State<AppState>,
+async fn create_account<S: WithLedger>(
+    State(state): State<S>,
     AppJson(req): AppJson<CreateAccountRequest>,
 ) -> Result<Json<Account>, AppError> {
     let account = state
-        .with_ledger(move |ledger| {
-            ledger.open_account(&req.name, req.currency, req.kind, req.opening_balance)
-        })
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.open_account(&req.name, req.currency, req.kind, req.opening_balance).await
+        }))
         .await?;
     Ok(Json(account))
 }
 
-async fn list_accounts(
-    State(state): State<AppState>,
+async fn list_accounts<S: WithLedger>(
+    State(state): State<S>,
 ) -> Result<Json<Vec<AccountWithBalance>>, AppError> {
     let with_balances = state
-        .with_ledger(|ledger| {
-            ledger
-                .accounts()?
-                .into_iter()
-                .map(|account| {
-                    let balance = ledger.account_balance(account.id)?;
-                    Ok(AccountWithBalance { account, balance })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
+        .with_ledger(|ledger| Box::pin(async move {
+            let accounts = ledger.accounts().await?;
+            let mut result = Vec::with_capacity(accounts.len());
+            for account in accounts {
+                let balance = ledger.account_balance(account.id).await?;
+                result.push(AccountWithBalance { account, balance });
+            }
+            Ok(result)
+        }))
         .await?;
     Ok(Json(with_balances))
 }
 
-async fn get_account(
-    State(state): State<AppState>,
+async fn get_account<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<AccountId>,
 ) -> Result<Json<AccountWithBalance>, AppError> {
     let with_balance = state
-        .with_ledger(move |ledger| {
+        .with_ledger(move |ledger| Box::pin(async move {
             let account = ledger
-                .account(id)?
+                .account(id).await?
                 .ok_or(LedgerError::AccountNotFound(id))?;
-            let balance = ledger.account_balance(id)?;
+            let balance = ledger.account_balance(id).await?;
             Ok(AccountWithBalance { account, balance })
-        })
+        }))
         .await?;
     Ok(Json(with_balance))
 }
@@ -80,11 +79,10 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use ledger_core::SqliteStore;
     use tower::ServiceExt;
 
-    fn test_state() -> AppState {
-        AppState::new(SqliteStore::open_in_memory().unwrap())
+    fn test_state() -> crate::state::TestState {
+        crate::state::TestState::new()
     }
 
     #[tokio::test]
@@ -134,13 +132,14 @@ mod tests {
         state
             .ledger
             .lock()
-            .unwrap()
+            .await
             .open_account(
                 "Checking",
                 Currency::new("EUR").unwrap(),
                 AccountKind::Own,
                 rust_decimal_macros::dec!(50),
             )
+            .await
             .unwrap();
         let response = app(state)
             .oneshot(

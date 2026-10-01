@@ -1,40 +1,90 @@
 use crate::error::AppError;
-use ledger_core::{Ledger, LedgerError, SqliteStore};
-use std::sync::{Arc, Mutex};
+use ledger_core::{Ledger, LedgerError, LedgerStore, PgStore};
+use sqlx::PgPool;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 
+#[cfg(test)]
+use ledger_core::InMemoryStore;
+#[cfg(test)]
+use tokio::sync::Mutex;
+
+/// Shared interface implemented by both `AppState` (production, pool-backed)
+/// and `TestState` (tests, in-memory). Handlers are generic over this trait.
+pub trait WithLedger: Clone + Send + Sync + 'static {
+    type Store: LedgerStore;
+
+    fn with_ledger<F, T>(
+        &self,
+        f: F,
+    ) -> impl Future<Output = Result<T, AppError>> + Send + '_
+    where
+        for<'a> F: FnOnce(
+            &'a mut Ledger<Self::Store>,
+        ) -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
+        F: Send + 'static,
+        T: Send + 'static;
+}
+
+/// Production state: holds a pool and acquires one connection per request.
 #[derive(Clone)]
 pub struct AppState {
-    pub ledger: Arc<Mutex<Ledger<SqliteStore>>>,
+    pool: Arc<PgPool>,
 }
 
 impl AppState {
-    pub fn new(store: SqliteStore) -> Self {
-        AppState {
-            ledger: Arc::new(Mutex::new(Ledger::new(store))),
-        }
+    pub fn new(pool: PgPool) -> Self {
+        AppState { pool: Arc::new(pool) }
     }
+}
 
-    /// Runs `f` on Tokio's blocking-task pool rather than an async worker
-    /// thread. rusqlite is a synchronous C binding with no async I/O of its
-    /// own, so calling it directly from an async handler would hold a
-    /// worker thread (and, since std::sync::Mutex::lock() also blocks
-    /// rather than yielding, every handler queued behind it) for as long as
-    /// the disk I/O takes; enough concurrent requests could starve the
-    /// whole runtime, including unrelated requests that never touch the
-    /// ledger.
-    pub async fn with_ledger<F, T>(&self, f: F) -> Result<T, AppError>
+impl WithLedger for AppState {
+    type Store = PgStore;
+
+    async fn with_ledger<F, T>(&self, f: F) -> Result<T, AppError>
     where
-        F: FnOnce(&mut Ledger<SqliteStore>) -> Result<T, LedgerError> + Send + 'static,
+        for<'a> F: FnOnce(
+            &'a mut Ledger<PgStore>,
+        ) -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
+        F: Send + 'static,
         T: Send + 'static,
     {
-        let ledger = self.ledger.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = ledger
-                .lock()
-                .map_err(|_| AppError::internal("the ledger lock was poisoned"))?;
-            f(&mut guard).map_err(AppError::from)
-        })
-        .await
-        .map_err(|_| AppError::internal("the ledger task panicked"))?
+        let store = PgStore::acquire(&self.pool).await.map_err(AppError::from)?;
+        let mut ledger = Ledger::new(store);
+        f(&mut ledger).await.map_err(AppError::from)
+    }
+}
+
+/// Test state: wraps an `InMemoryStore` behind a mutex. No database needed.
+#[cfg(test)]
+#[derive(Clone)]
+pub struct TestState {
+    pub ledger: Arc<Mutex<Ledger<InMemoryStore>>>,
+}
+
+#[cfg(test)]
+impl TestState {
+    pub fn new() -> Self {
+        TestState {
+            ledger: Arc::new(Mutex::new(Ledger::new(InMemoryStore::default()))),
+        }
+    }
+}
+
+#[cfg(test)]
+impl WithLedger for TestState {
+    type Store = InMemoryStore;
+
+    async fn with_ledger<F, T>(&self, f: F) -> Result<T, AppError>
+    where
+        for<'a> F: FnOnce(
+            &'a mut Ledger<InMemoryStore>,
+        ) -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
+        F: Send + 'static,
+        T: Send + 'static,
+    {
+        let mut guard = self.ledger.lock().await;
+        f(&mut guard).await.map_err(AppError::from)
     }
 }

@@ -4,7 +4,7 @@
 
 use crate::error::{AppError, AppJson};
 use crate::import_matching::{build_queue, new_import};
-use crate::state::AppState;
+use crate::state::WithLedger;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
@@ -143,36 +143,36 @@ pub struct Discarded {
     pub discarded: usize,
 }
 
-pub fn router() -> Router<AppState> {
+pub fn router<S: WithLedger>() -> Router<S> {
     Router::new()
         .route(
             "/imports",
-            post(upload)
-                .get(list_imports)
+            post(upload::<S>)
+                .get(list_imports::<S>)
                 .layer(DefaultBodyLimit::max(UPLOAD_LIMIT_BYTES)),
         )
-        .route("/imports/:id", get(get_import))
-        .route("/imports/:id/queue", get(get_queue))
-        .route("/imports/:id/queue/accept-all", post(accept_all))
-        .route("/imports/:id/queue/discard-all", post(discard_all))
+        .route("/imports/:id", get(get_import::<S>))
+        .route("/imports/:id/queue", get(get_queue::<S>))
+        .route("/imports/:id/queue/accept-all", post(accept_all::<S>))
+        .route("/imports/:id/queue/discard-all", post(discard_all::<S>))
         .route(
             "/imports/:id/queue/:row_id",
-            axum::routing::patch(set_category),
+            axum::routing::patch(set_category::<S>),
         )
-        .route("/imports/:id/queue/:row_id/accept", post(accept))
+        .route("/imports/:id/queue/:row_id/accept", post(accept::<S>))
         .route(
             "/imports/:id/queue/:row_id/accept-as-transfer",
-            post(accept_as_transfer),
+            post(accept_as_transfer::<S>),
         )
         .route(
             "/imports/:id/queue/:row_id/resolve-revert",
-            post(resolve_revert),
+            post(resolve_revert::<S>),
         )
-        .route("/imports/:id/queue/:row_id/discard", post(discard))
+        .route("/imports/:id/queue/:row_id/discard", post(discard::<S>))
 }
 
-async fn upload(
-    State(state): State<AppState>,
+async fn upload<S: WithLedger>(
+    State(state): State<S>,
     multipart: Multipart,
 ) -> Result<Json<ImportResult>, AppError> {
     let upload = read_upload(multipart).await?;
@@ -181,15 +181,15 @@ async fn upload(
     // Fail fast before parsing; stage_import checks again right before
     // saving, since another upload could stage in between.
     let account = state
-        .with_ledger(move |ledger| {
+        .with_ledger(move |ledger| Box::pin(async move {
             let account = ledger
-                .account(account_id)?
+                .account(account_id).await?
                 .ok_or(LedgerError::AccountNotFound(account_id))?;
-            if ledger.incomplete_import_for_account(account_id)?.is_some() {
+            if ledger.incomplete_import_for_account(account_id).await?.is_some() {
                 return Err(LedgerError::IncompleteImportExists);
             }
             Ok(account)
-        })
+        }))
         .await?;
 
     // Parsing can run pdftotext, a blocking subprocess.
@@ -200,8 +200,8 @@ async fn upload(
 
     let file_name = upload.file_name;
     let result = state
-        .with_ledger(move |ledger| {
-            let entries = ledger.entries(account_id)?;
+        .with_ledger(move |ledger| Box::pin(async move {
+            let entries = ledger.entries(account_id).await?;
             let import = new_import(&account, file_name, &parsed);
             let staged = build_queue(&import, &parsed, &entries);
             let result = ImportResult {
@@ -210,15 +210,15 @@ async fn upload(
                 reverted_candidate_count: parsed.reverted_candidates.len(),
                 suspicious_count: staged.suspicious_count(),
             };
-            ledger.stage_import(import, staged.rows, staged.matches)?;
+            ledger.stage_import(import, staged.rows, staged.matches).await?;
             Ok(result)
-        })
+        }))
         .await?;
     Ok(Json(result))
 }
 
-async fn list_imports(State(state): State<AppState>) -> Result<Json<Vec<ImportSummary>>, AppError> {
-    let imports = state.with_ledger(|ledger| ledger.imports()).await?;
+async fn list_imports<S: WithLedger>(State(state): State<S>) -> Result<Json<Vec<ImportSummary>>, AppError> {
+    let imports = state.with_ledger(|ledger| Box::pin(async move { ledger.imports().await })).await?;
     Ok(Json(
         imports
             .into_iter()
@@ -233,50 +233,52 @@ async fn list_imports(State(state): State<AppState>) -> Result<Json<Vec<ImportSu
     ))
 }
 
-async fn get_import(
-    State(state): State<AppState>,
+async fn get_import<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<ImportId>,
 ) -> Result<Json<Import>, AppError> {
     let import = state
-        .with_ledger(move |ledger| ledger.import(id)?.ok_or(LedgerError::ImportNotFound(id)))
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.import(id).await?.ok_or(LedgerError::ImportNotFound(id))
+        }))
         .await?;
     Ok(Json(import))
 }
 
-async fn get_queue(
-    State(state): State<AppState>,
+async fn get_queue<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<ImportId>,
 ) -> Result<Json<Vec<QueueRowView>>, AppError> {
     Ok(Json(
         state
-            .with_ledger(move |ledger| ledger.import_queue(id))
+            .with_ledger(move |ledger| Box::pin(async move { ledger.import_queue(id).await }))
             .await?,
     ))
 }
 
-async fn accept_all(
-    State(state): State<AppState>,
+async fn accept_all<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<ImportId>,
 ) -> Result<Json<Accepted>, AppError> {
     let accepted = state
-        .with_ledger(move |ledger| ledger.bulk_accept_import(id))
+        .with_ledger(move |ledger| Box::pin(async move { ledger.bulk_accept_import(id).await }))
         .await?;
     Ok(Json(Accepted { accepted }))
 }
 
-async fn discard_all(
-    State(state): State<AppState>,
+async fn discard_all<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<ImportId>,
 ) -> Result<Json<Discarded>, AppError> {
     let discarded = state
-        .with_ledger(move |ledger| ledger.discard_import(id))
+        .with_ledger(move |ledger| Box::pin(async move { ledger.discard_import(id).await }))
         .await?;
     Ok(Json(Discarded { discarded }))
 }
 
 /// The body is optional: an empty one means "no explicit category".
-async fn accept(
-    State(state): State<AppState>,
+async fn accept<S: WithLedger>(
+    State(state): State<S>,
     Path((id, row_id)): Path<(ImportId, QueueRowId)>,
     body: Bytes,
 ) -> Result<Json<Entry>, AppError> {
@@ -289,20 +291,22 @@ async fn accept(
     };
     Ok(Json(
         state
-            .with_ledger(move |ledger| ledger.accept_queue_row(id, row_id, category))
+            .with_ledger(move |ledger| Box::pin(async move {
+                ledger.accept_queue_row(id, row_id, category).await
+            }))
             .await?,
     ))
 }
 
-async fn accept_as_transfer(
-    State(state): State<AppState>,
+async fn accept_as_transfer<S: WithLedger>(
+    State(state): State<S>,
     Path((id, row_id)): Path<(ImportId, QueueRowId)>,
     AppJson(req): AppJson<AcceptAsTransferRequest>,
 ) -> Result<Json<TransferResult>, AppError> {
     let (out_entry, in_entry) = state
-        .with_ledger(move |ledger| {
-            ledger.accept_queue_row_as_transfer(id, row_id, req.other_account_id, req.other_amount)
-        })
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.accept_queue_row_as_transfer(id, row_id, req.other_account_id, req.other_amount).await
+        }))
         .await?;
     Ok(Json(TransferResult {
         out_entry,
@@ -310,35 +314,41 @@ async fn accept_as_transfer(
     }))
 }
 
-async fn resolve_revert(
-    State(state): State<AppState>,
+async fn resolve_revert<S: WithLedger>(
+    State(state): State<S>,
     Path((id, row_id)): Path<(ImportId, QueueRowId)>,
 ) -> Result<Json<Entry>, AppError> {
     Ok(Json(
         state
-            .with_ledger(move |ledger| ledger.resolve_reverted_candidate(id, row_id))
+            .with_ledger(move |ledger| Box::pin(async move {
+                ledger.resolve_reverted_candidate(id, row_id).await
+            }))
             .await?,
     ))
 }
 
-async fn set_category(
-    State(state): State<AppState>,
+async fn set_category<S: WithLedger>(
+    State(state): State<S>,
     Path((id, row_id)): Path<(ImportId, QueueRowId)>,
     AppJson(req): AppJson<SetCategoryRequest>,
 ) -> Result<Json<ImportQueueRow>, AppError> {
     Ok(Json(
         state
-            .with_ledger(move |ledger| ledger.set_queue_row_category(id, row_id, req.category))
+            .with_ledger(move |ledger| Box::pin(async move {
+                ledger.set_queue_row_category(id, row_id, req.category).await
+            }))
             .await?,
     ))
 }
 
-async fn discard(
-    State(state): State<AppState>,
+async fn discard<S: WithLedger>(
+    State(state): State<S>,
     Path((id, row_id)): Path<(ImportId, QueueRowId)>,
 ) -> Result<StatusCode, AppError> {
     state
-        .with_ledger(move |ledger| ledger.discard_queue_row(id, row_id))
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.discard_queue_row(id, row_id).await
+        }))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -347,19 +357,20 @@ async fn discard(
 mod tests {
     use super::*;
     use crate::app;
+    use crate::state::TestState;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use ledger_core::{
         AccountKind, BankState, Currency, Entry, EntryId, Import, ImportQueueRow, QueueRowView,
-        RowReview, SqliteStore,
+        RowReview,
     };
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
     use tower::ServiceExt;
 
-    fn test_state() -> AppState {
-        AppState::new(SqliteStore::open_in_memory().unwrap())
+    fn test_state() -> crate::state::TestState {
+        crate::state::TestState::new()
     }
 
     fn fixture(name: &str) -> Vec<u8> {
@@ -370,17 +381,18 @@ mod tests {
         .unwrap()
     }
 
-    fn an_account(state: &AppState, currency: &str, opening: Decimal) -> AccountId {
+    async fn an_account(state: &crate::state::TestState, currency: &str, opening: Decimal) -> AccountId {
         state
             .ledger
             .lock()
-            .unwrap()
+            .await
             .open_account(
                 "Card",
                 Currency::new(currency).unwrap(),
                 AccountKind::Own,
                 opening,
             )
+            .await
             .unwrap()
             .id
     }
@@ -424,7 +436,7 @@ mod tests {
             .unwrap()
     }
 
-    async fn send(state: &AppState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
+    async fn send(state: &crate::state::TestState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
         let response = app(state.clone()).oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -437,7 +449,7 @@ mod tests {
     }
 
     async fn upload(
-        state: &AppState,
+        state: &crate::state::TestState,
         account_id: AccountId,
         bank_type: &str,
         file_name: &str,
@@ -466,7 +478,7 @@ mod tests {
         Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
 
-    async fn queue(state: &AppState, import_id: &str) -> Vec<QueueRowView> {
+    async fn queue(state: &crate::state::TestState, import_id: &str) -> Vec<QueueRowView> {
         let (status, body) = send(state, get(&format!("/imports/{import_id}/queue"))).await;
         assert_eq!(status, StatusCode::OK);
         serde_json::from_value(body).unwrap()
@@ -476,16 +488,17 @@ mod tests {
         body["import_id"].as_str().unwrap().to_string()
     }
 
-    fn imports_saved(state: &AppState) -> usize {
-        state.ledger.lock().unwrap().imports().unwrap().len()
+    async fn imports_saved(state: &crate::state::TestState) -> usize {
+        state.ledger.lock().await.imports().await.unwrap().len()
     }
 
-    fn balance(state: &AppState, account_id: AccountId) -> Decimal {
+    async fn balance(state: &crate::state::TestState, account_id: AccountId) -> Decimal {
         state
             .ledger
             .lock()
-            .unwrap()
+            .await
             .account_balance(account_id)
+            .await
             .unwrap()
     }
 
@@ -494,7 +507,7 @@ mod tests {
     #[tokio::test]
     async fn uploading_a_bank_a_statement_stages_its_queue() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(150));
+        let account = an_account(&state, "EUR", dec!(150)).await;
         let (status, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["total_rows"], 9);
@@ -522,8 +535,9 @@ mod tests {
         assert!(state
             .ledger
             .lock()
-            .unwrap()
+            .await
             .entries(account)
+            .await
             .unwrap()
             .is_empty());
 
@@ -550,7 +564,7 @@ mod tests {
     #[tokio::test]
     async fn uploading_a_bank_b_statement_stages_its_queue() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(1250));
+        let account = an_account(&state, "EUR", dec!(1250)).await;
         let (status, body) = upload(&state, account, "BankB", "bank_b_statement.pdf").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["total_rows"], 4);
@@ -560,27 +574,27 @@ mod tests {
     #[tokio::test]
     async fn an_account_settlement_pdf_is_rejected_and_nothing_is_saved() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
+        let account = an_account(&state, "EUR", dec!(0)).await;
         let (status, _) = upload(&state, account, "BankB", "bank_b_settlement.pdf").await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(imports_saved(&state), 0);
+        assert_eq!(imports_saved(&state).await, 0);
     }
 
     #[tokio::test]
     async fn a_failed_balance_check_returns_both_figures_and_saves_nothing() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
+        let account = an_account(&state, "EUR", dec!(0)).await;
         let (status, body) = upload(&state, account, "BankA", "bank_a_bad_balance.csv").await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body["expected"], "90.00");
         assert_eq!(body["actual"], "88.00");
-        assert_eq!(imports_saved(&state), 0);
+        assert_eq!(imports_saved(&state).await, 0);
     }
 
     #[tokio::test]
     async fn the_wrong_bank_type_for_a_file_just_fails_to_parse() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
+        let account = an_account(&state, "EUR", dec!(0)).await;
         let (status, _) = send(
             &state,
             multipart(
@@ -591,7 +605,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(imports_saved(&state), 0);
+        assert_eq!(imports_saved(&state).await, 0);
     }
 
     #[tokio::test]
@@ -605,13 +619,13 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(imports_saved(&state), 0);
+        assert_eq!(imports_saved(&state).await, 0);
     }
 
     #[tokio::test]
     async fn a_malformed_upload_request_is_a_bad_request() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
+        let account = an_account(&state, "EUR", dec!(0)).await;
         let file = || Some(("f.csv", fixture("bank_a_statement.csv")));
         assert_eq!(
             send(&state, multipart(Some(account), Some("BankC"), file()))
@@ -633,17 +647,17 @@ mod tests {
                 .0,
             StatusCode::BAD_REQUEST
         );
-        assert_eq!(imports_saved(&state), 0);
+        assert_eq!(imports_saved(&state).await, 0);
     }
 
     #[tokio::test]
     async fn a_second_upload_while_one_is_incomplete_is_409_and_allowed_once_it_completes() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
+        let account = an_account(&state, "EUR", dec!(0)).await;
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         let (status, _) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert_eq!(imports_saved(&state), 1);
+        assert_eq!(imports_saved(&state).await, 1);
         let (status, discarded) = send(
             &state,
             json_request(
@@ -662,7 +676,7 @@ mod tests {
     #[tokio::test]
     async fn a_file_larger_than_axums_2mb_default_is_accepted() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
+        let account = an_account(&state, "EUR", dec!(0)).await;
         let mut csv = fixture("bank_a_bad_balance.csv");
         csv.extend(vec![b'\n'; 3 * 1024 * 1024]);
         let (status, _) = send(
@@ -677,20 +691,21 @@ mod tests {
     // ---- matching at upload ----
 
     /// An entry with no time, the way a manual entry is recorded.
-    fn an_untimed_entry(state: &AppState, account: AccountId, day: u32, amount: Decimal) -> Entry {
+    async fn an_untimed_entry(state: &crate::state::TestState, account: AccountId, day: u32, amount: Decimal) -> Entry {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 3, day).unwrap();
         state
             .ledger
             .lock()
-            .unwrap()
+            .await
             .record_manual_entry(account, date, amount, "earlier")
+            .await
             .unwrap()
     }
 
     /// An entry with a time, which only an import produces: stages a
     /// one-row statement and accepts it, as an earlier upload would have.
     async fn an_earlier_imported_entry(
-        state: &AppState,
+        state: &TestState,
         account: AccountId,
         started: &str,
         amount: &str,
@@ -726,22 +741,22 @@ mod tests {
     #[tokio::test]
     async fn a_reverted_row_matching_a_timed_entry_is_suggested_not_applied() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
+        let account = an_account(&state, "EUR", dec!(0)).await;
         let earlier =
             an_earlier_imported_entry(&state, account, "2026-03-04 12:00:00", "-4.20").await;
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         let rows = queue(&state, &import_id(&body)).await;
         let candidate = the_reverted_candidate(&rows);
         assert_eq!(suggested_entry_id(candidate), Some(earlier.id));
-        let still = state.ledger.lock().unwrap().entries(account).unwrap();
+        let still = state.ledger.lock().await.entries(account).await.unwrap();
         assert_eq!(still[0].bank_state, BankState::Completed);
     }
 
     #[tokio::test]
     async fn a_reverted_row_against_an_untimed_or_absent_entry_is_queued_with_no_suggestion() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
-        an_untimed_entry(&state, account, 4, dec!(-4.20));
+        let account = an_account(&state, "EUR", dec!(0)).await;
+        an_untimed_entry(&state, account, 4, dec!(-4.20)).await;
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(body["reverted_candidate_count"], 1);
         let rows = queue(&state, &import_id(&body)).await;
@@ -766,8 +781,8 @@ mod tests {
     #[tokio::test]
     async fn a_row_resembling_an_existing_entry_is_flagged_suspicious() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0));
-        let earlier = an_untimed_entry(&state, account, 6, dec!(200.00));
+        let account = an_account(&state, "EUR", dec!(0)).await;
+        let earlier = an_untimed_entry(&state, account, 6, dec!(200.00)).await;
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(body["suspicious_count"], 1);
         let rows = queue(&state, &import_id(&body)).await;
@@ -805,9 +820,9 @@ mod tests {
     #[tokio::test]
     async fn rows_in_another_currency_account_are_never_matched() {
         let state = test_state();
-        let naira = an_account(&state, "NGN", dec!(0));
-        let euro = an_account(&state, "EUR", dec!(0));
-        an_untimed_entry(&state, euro, 2, dec!(-12.00));
+        let naira = an_account(&state, "NGN", dec!(0)).await;
+        let euro = an_account(&state, "EUR", dec!(0)).await;
+        an_untimed_entry(&state, euro, 2, dec!(-12.00)).await;
         let (status, body) = upload(&state, naira, "BankA", "bank_a_statement_ngn.csv").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["suspicious_count"], 0);
@@ -819,8 +834,8 @@ mod tests {
 
     // ---- review actions ----
 
-    async fn staged_bank_a(state: &AppState) -> (AccountId, String, Vec<QueueRowView>) {
-        let account = an_account(state, "EUR", dec!(150));
+    async fn staged_bank_a(state: &crate::state::TestState) -> (AccountId, String, Vec<QueueRowView>) {
+        let account = an_account(state, "EUR", dec!(150)).await;
         let (_, body) = upload(state, account, "BankA", "bank_a_statement.csv").await;
         let id = import_id(&body);
         let rows = queue(state, &id).await;
@@ -973,7 +988,7 @@ mod tests {
         let (_, id, rows) = staged_bank_a(&state).await;
         let candidate = the_reverted_candidate(&rows).row.id;
         let normal = row_described(&rows, "Night Kiosk").row.id;
-        let other = an_account(&state, "EUR", dec!(0));
+        let other = an_account(&state, "EUR", dec!(0)).await;
         for (method, uri, body) in [
             (
                 "POST",
@@ -1008,7 +1023,7 @@ mod tests {
     async fn accepting_as_a_transfer_moves_money_to_the_other_account() {
         let state = test_state();
         let (account, id, rows) = staged_bank_a(&state).await;
-        let savings = an_account(&state, "EUR", dec!(0));
+        let savings = an_account(&state, "EUR", dec!(0)).await;
         let row = row_described(&rows, "Payment from Jane Example").row.id;
         let (status, body) = send(
             &state,
@@ -1076,8 +1091,9 @@ mod tests {
         assert!(state
             .ledger
             .lock()
-            .unwrap()
+            .await
             .entries(account)
+            .await
             .unwrap()
             .is_empty());
     }
@@ -1108,7 +1124,7 @@ mod tests {
     #[tokio::test]
     async fn a_transfer_from_an_account_to_itself_is_422() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(100));
+        let account = an_account(&state, "EUR", dec!(100)).await;
         let (status, _) = send(
             &state,
             json_request(
@@ -1126,8 +1142,8 @@ mod tests {
     #[tokio::test]
     async fn importing_and_accepting_every_fixture_statement_reaches_the_statements_balances() {
         let state = test_state();
-        let card = an_account(&state, "EUR", dec!(150.00));
-        let current = an_account(&state, "EUR", dec!(1250.00));
+        let card = an_account(&state, "EUR", dec!(150.00)).await;
+        let current = an_account(&state, "EUR", dec!(1250.00)).await;
 
         let (_, body) = upload(&state, card, "BankA", "bank_a_statement.csv").await;
         let id = import_id(&body);
@@ -1154,7 +1170,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(accepted["accepted"], 8);
         // The statement's closing balance, plus the one still-pending row.
-        assert_eq!(balance(&state, card), dec!(311.35) - dec!(6.50));
+        assert_eq!(balance(&state, card).await, dec!(311.35) - dec!(6.50));
 
         let (_, body) = upload(&state, current, "BankB", "bank_b_statement.pdf").await;
         let id = import_id(&body);
@@ -1168,7 +1184,7 @@ mod tests {
         )
         .await;
         assert_eq!(accepted["accepted"], 4);
-        assert_eq!(balance(&state, current), dec!(2737.62));
+        assert_eq!(balance(&state, current).await, dec!(2737.62));
 
         let (_, list) = send(&state, get("/imports")).await;
         assert!(list

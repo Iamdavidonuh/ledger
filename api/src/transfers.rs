@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppJson};
-use crate::state::AppState;
+use crate::state::WithLedger;
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -23,23 +23,23 @@ pub struct TransferResponse {
     pub in_entry: Entry,
 }
 
-pub fn router() -> Router<AppState> {
-    Router::new().route("/transfers", post(create_transfer))
+pub fn router<S: WithLedger>() -> Router<S> {
+    Router::new().route("/transfers", post(create_transfer::<S>))
 }
 
-async fn create_transfer(
-    State(state): State<AppState>,
+async fn create_transfer<S: WithLedger>(
+    State(state): State<S>,
     AppJson(req): AppJson<TransferRequest>,
 ) -> Result<Json<TransferResponse>, AppError> {
     let (out_entry, in_entry) = state
-        .with_ledger(move |ledger| {
+        .with_ledger(move |ledger| Box::pin(async move {
             ledger.transfer(Transfer::new(
                 TransferLeg::new(req.from_account_id, req.amount_sent),
                 TransferLeg::new(req.to_account_id, req.amount_received),
                 req.date,
                 req.description,
-            ))
-        })
+            )).await
+        }))
         .await?;
     Ok(Json(TransferResponse {
         out_entry,

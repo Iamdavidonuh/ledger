@@ -7,8 +7,8 @@ pub mod error;
 pub mod id;
 pub mod import;
 pub mod ledger;
+pub mod pg_store;
 pub mod pot;
-pub mod sqlite_store;
 pub mod store;
 pub mod transfer;
 pub mod valuation;
@@ -26,8 +26,8 @@ pub use import::{
     RowDetail, RowReview,
 };
 pub use ledger::Ledger;
+pub use pg_store::PgStore;
 pub use pot::{Allocation, Pot};
-pub use sqlite_store::{SqliteStore, SqliteStoreError};
 pub use store::{InMemoryStore, LedgerStore};
 pub use transfer::{Transfer, TransferLeg};
 pub use valuation::Valuation;

@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppJson};
-use crate::state::AppState;
+use crate::state::WithLedger;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -29,77 +29,78 @@ pub struct AllocateRequest {
     pub date: NaiveDate,
 }
 
-pub fn router() -> Router<AppState> {
+pub fn router<S: WithLedger>() -> Router<S> {
     Router::new()
-        .route("/pots", post(open_pot).get(list_pots))
-        .route("/pots/:id", get(get_pot).delete(delete_pot))
-        .route("/pots/:id/allocations", post(allocate))
+        .route("/pots", post(open_pot::<S>).get(list_pots::<S>))
+        .route("/pots/:id", get(get_pot::<S>).delete(delete_pot::<S>))
+        .route("/pots/:id/allocations", post(allocate::<S>))
 }
 
-async fn open_pot(
-    State(state): State<AppState>,
+async fn open_pot<S: WithLedger>(
+    State(state): State<S>,
     AppJson(req): AppJson<OpenPotRequest>,
 ) -> Result<Json<Pot>, AppError> {
     let pot = state
-        .with_ledger(move |ledger| {
-            ledger.open_pot(&req.name, req.currency, req.target, req.priority)
-        })
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.open_pot(&req.name, req.currency, req.target, req.priority).await
+        }))
         .await?;
     Ok(Json(pot))
 }
 
-async fn list_pots(State(state): State<AppState>) -> Result<Json<Vec<PotWithBalance>>, AppError> {
+async fn list_pots<S: WithLedger>(State(state): State<S>) -> Result<Json<Vec<PotWithBalance>>, AppError> {
     let with_balances = state
-        .with_ledger(|ledger| {
-            ledger
-                .pots()?
-                .into_iter()
-                .map(|pot| {
-                    let balance = ledger.pot_balance(pot.id)?;
-                    Ok(PotWithBalance { pot, balance })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
+        .with_ledger(|ledger| Box::pin(async move {
+            let pots = ledger.pots().await?;
+            let mut result = Vec::with_capacity(pots.len());
+            for pot in pots {
+                let balance = ledger.pot_balance(pot.id).await?;
+                result.push(PotWithBalance { pot, balance });
+            }
+            Ok(result)
+        }))
         .await?;
     Ok(Json(with_balances))
 }
 
-async fn get_pot(
-    State(state): State<AppState>,
+async fn get_pot<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<PotId>,
 ) -> Result<Json<PotWithBalance>, AppError> {
     let with_balance = state
-        .with_ledger(move |ledger| {
-            let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
-            let balance = ledger.pot_balance(id)?;
+        .with_ledger(move |ledger| Box::pin(async move {
+            let pot = ledger.pot(id).await?.ok_or(LedgerError::PotNotFound(id))?;
+            let balance = ledger.pot_balance(id).await?;
             Ok(PotWithBalance { pot, balance })
-        })
+        }))
         .await?;
     Ok(Json(with_balance))
 }
 
-async fn delete_pot(
-    State(state): State<AppState>,
+async fn delete_pot<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<PotId>,
 ) -> Result<StatusCode, AppError> {
     state
-        .with_ledger(move |ledger| ledger.delete_pot(id))
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.delete_pot(id).await
+        }))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn allocate(
-    State(state): State<AppState>,
+async fn allocate<S: WithLedger>(
+    State(state): State<S>,
     Path(id): Path<PotId>,
     AppJson(req): AppJson<AllocateRequest>,
 ) -> Result<Json<PotWithBalance>, AppError> {
     let with_balance = state
-        .with_ledger(move |ledger| {
-            ledger.allocate_to_pot(id, req.amount, req.date)?;
-            let pot = ledger.pot(id)?.ok_or(LedgerError::PotNotFound(id))?;
-            let balance = ledger.pot_balance(id)?;
+        .with_ledger(move |ledger| Box::pin(async move {
+            ledger.allocate_to_pot(id, req.amount, req.date).await?;
+            let pot = ledger.pot(id).await?.ok_or(LedgerError::PotNotFound(id))?;
+            let balance = ledger.pot_balance(id).await?;
             Ok(PotWithBalance { pot, balance })
-        })
+        }))
         .await?;
     Ok(Json(with_balance))
 }
