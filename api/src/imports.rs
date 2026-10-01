@@ -181,15 +181,22 @@ async fn upload<S: WithLedger>(
     // Fail fast before parsing; stage_import checks again right before
     // saving, since another upload could stage in between.
     let account = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            let account = ledger
-                .account(account_id).await?
-                .ok_or(LedgerError::AccountNotFound(account_id))?;
-            if ledger.incomplete_import_for_account(account_id).await?.is_some() {
-                return Err(LedgerError::IncompleteImportExists);
-            }
-            Ok(account)
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                let account = ledger
+                    .account(account_id)
+                    .await?
+                    .ok_or(LedgerError::AccountNotFound(account_id))?;
+                if ledger
+                    .incomplete_import_for_account(account_id)
+                    .await?
+                    .is_some()
+                {
+                    return Err(LedgerError::IncompleteImportExists);
+                }
+                Ok(account)
+            })
+        })
         .await?;
 
     // Parsing can run pdftotext, a blocking subprocess.
@@ -200,25 +207,33 @@ async fn upload<S: WithLedger>(
 
     let file_name = upload.file_name;
     let result = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            let entries = ledger.entries(account_id).await?;
-            let import = new_import(&account, file_name, &parsed);
-            let staged = build_queue(&import, &parsed, &entries);
-            let result = ImportResult {
-                import_id: import.id,
-                total_rows: staged.rows.len(),
-                reverted_candidate_count: parsed.reverted_candidates.len(),
-                suspicious_count: staged.suspicious_count(),
-            };
-            ledger.stage_import(import, staged.rows, staged.matches).await?;
-            Ok(result)
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                let entries = ledger.entries(account_id).await?;
+                let import = new_import(&account, file_name, &parsed);
+                let staged = build_queue(&import, &parsed, &entries);
+                let result = ImportResult {
+                    import_id: import.id,
+                    total_rows: staged.rows.len(),
+                    reverted_candidate_count: parsed.reverted_candidates.len(),
+                    suspicious_count: staged.suspicious_count(),
+                };
+                ledger
+                    .stage_import(import, staged.rows, staged.matches)
+                    .await?;
+                Ok(result)
+            })
+        })
         .await?;
     Ok(Json(result))
 }
 
-async fn list_imports<S: WithLedger>(State(state): State<S>) -> Result<Json<Vec<ImportSummary>>, AppError> {
-    let imports = state.with_ledger(|ledger| Box::pin(async move { ledger.imports().await })).await?;
+async fn list_imports<S: WithLedger>(
+    State(state): State<S>,
+) -> Result<Json<Vec<ImportSummary>>, AppError> {
+    let imports = state
+        .with_ledger(|ledger| Box::pin(async move { ledger.imports().await }))
+        .await?;
     Ok(Json(
         imports
             .into_iter()
@@ -238,9 +253,14 @@ async fn get_import<S: WithLedger>(
     Path(id): Path<ImportId>,
 ) -> Result<Json<Import>, AppError> {
     let import = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.import(id).await?.ok_or(LedgerError::ImportNotFound(id))
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .import(id)
+                    .await?
+                    .ok_or(LedgerError::ImportNotFound(id))
+            })
+        })
         .await?;
     Ok(Json(import))
 }
@@ -291,9 +311,9 @@ async fn accept<S: WithLedger>(
     };
     Ok(Json(
         state
-            .with_ledger(move |ledger| Box::pin(async move {
-                ledger.accept_queue_row(id, row_id, category).await
-            }))
+            .with_ledger(move |ledger| {
+                Box::pin(async move { ledger.accept_queue_row(id, row_id, category).await })
+            })
             .await?,
     ))
 }
@@ -304,9 +324,18 @@ async fn accept_as_transfer<S: WithLedger>(
     AppJson(req): AppJson<AcceptAsTransferRequest>,
 ) -> Result<Json<TransferResult>, AppError> {
     let (out_entry, in_entry) = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.accept_queue_row_as_transfer(id, row_id, req.other_account_id, req.other_amount).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .accept_queue_row_as_transfer(
+                        id,
+                        row_id,
+                        req.other_account_id,
+                        req.other_amount,
+                    )
+                    .await
+            })
+        })
         .await?;
     Ok(Json(TransferResult {
         out_entry,
@@ -320,9 +349,9 @@ async fn resolve_revert<S: WithLedger>(
 ) -> Result<Json<Entry>, AppError> {
     Ok(Json(
         state
-            .with_ledger(move |ledger| Box::pin(async move {
-                ledger.resolve_reverted_candidate(id, row_id).await
-            }))
+            .with_ledger(move |ledger| {
+                Box::pin(async move { ledger.resolve_reverted_candidate(id, row_id).await })
+            })
             .await?,
     ))
 }
@@ -334,9 +363,13 @@ async fn set_category<S: WithLedger>(
 ) -> Result<Json<ImportQueueRow>, AppError> {
     Ok(Json(
         state
-            .with_ledger(move |ledger| Box::pin(async move {
-                ledger.set_queue_row_category(id, row_id, req.category).await
-            }))
+            .with_ledger(move |ledger| {
+                Box::pin(async move {
+                    ledger
+                        .set_queue_row_category(id, row_id, req.category)
+                        .await
+                })
+            })
             .await?,
     ))
 }
@@ -346,9 +379,9 @@ async fn discard<S: WithLedger>(
     Path((id, row_id)): Path<(ImportId, QueueRowId)>,
 ) -> Result<StatusCode, AppError> {
     state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.discard_queue_row(id, row_id).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move { ledger.discard_queue_row(id, row_id).await })
+        })
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -381,7 +414,11 @@ mod tests {
         .unwrap()
     }
 
-    async fn an_account(state: &crate::state::TestState, currency: &str, opening: Decimal) -> AccountId {
+    async fn an_account(
+        state: &crate::state::TestState,
+        currency: &str,
+        opening: Decimal,
+    ) -> AccountId {
         state
             .ledger
             .lock()
@@ -436,7 +473,10 @@ mod tests {
             .unwrap()
     }
 
-    async fn send(state: &crate::state::TestState, request: Request<Body>) -> (StatusCode, serde_json::Value) {
+    async fn send(
+        state: &crate::state::TestState,
+        request: Request<Body>,
+    ) -> (StatusCode, serde_json::Value) {
         let response = app(state.clone()).oneshot(request).await.unwrap();
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -691,7 +731,12 @@ mod tests {
     // ---- matching at upload ----
 
     /// An entry with no time, the way a manual entry is recorded.
-    async fn an_untimed_entry(state: &crate::state::TestState, account: AccountId, day: u32, amount: Decimal) -> Entry {
+    async fn an_untimed_entry(
+        state: &crate::state::TestState,
+        account: AccountId,
+        day: u32,
+        amount: Decimal,
+    ) -> Entry {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 3, day).unwrap();
         state
             .ledger
@@ -834,7 +879,9 @@ mod tests {
 
     // ---- review actions ----
 
-    async fn staged_bank_a(state: &crate::state::TestState) -> (AccountId, String, Vec<QueueRowView>) {
+    async fn staged_bank_a(
+        state: &crate::state::TestState,
+    ) -> (AccountId, String, Vec<QueueRowView>) {
         let account = an_account(state, "EUR", dec!(150)).await;
         let (_, body) = upload(state, account, "BankA", "bank_a_statement.csv").await;
         let id = import_id(&body);

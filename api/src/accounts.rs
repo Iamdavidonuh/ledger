@@ -23,7 +23,10 @@ pub struct AccountWithBalance {
 
 pub fn router<S: WithLedger>() -> Router<S> {
     Router::new()
-        .route("/accounts", post(create_account::<S>).get(list_accounts::<S>))
+        .route(
+            "/accounts",
+            post(create_account::<S>).get(list_accounts::<S>),
+        )
         .route("/accounts/:id", get(get_account::<S>))
 }
 
@@ -32,9 +35,13 @@ async fn create_account<S: WithLedger>(
     AppJson(req): AppJson<CreateAccountRequest>,
 ) -> Result<Json<Account>, AppError> {
     let account = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.open_account(&req.name, req.currency, req.kind, req.opening_balance).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .open_account(&req.name, req.currency, req.kind, req.opening_balance)
+                    .await
+            })
+        })
         .await?;
     Ok(Json(account))
 }
@@ -43,15 +50,17 @@ async fn list_accounts<S: WithLedger>(
     State(state): State<S>,
 ) -> Result<Json<Vec<AccountWithBalance>>, AppError> {
     let with_balances = state
-        .with_ledger(|ledger| Box::pin(async move {
-            let accounts = ledger.accounts().await?;
-            let mut result = Vec::with_capacity(accounts.len());
-            for account in accounts {
-                let balance = ledger.account_balance(account.id).await?;
-                result.push(AccountWithBalance { account, balance });
-            }
-            Ok(result)
-        }))
+        .with_ledger(|ledger| {
+            Box::pin(async move {
+                let accounts = ledger.accounts().await?;
+                let mut result = Vec::with_capacity(accounts.len());
+                for account in accounts {
+                    let balance = ledger.account_balance(account.id).await?;
+                    result.push(AccountWithBalance { account, balance });
+                }
+                Ok(result)
+            })
+        })
         .await?;
     Ok(Json(with_balances))
 }
@@ -61,13 +70,16 @@ async fn get_account<S: WithLedger>(
     Path(id): Path<AccountId>,
 ) -> Result<Json<AccountWithBalance>, AppError> {
     let with_balance = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            let account = ledger
-                .account(id).await?
-                .ok_or(LedgerError::AccountNotFound(id))?;
-            let balance = ledger.account_balance(id).await?;
-            Ok(AccountWithBalance { account, balance })
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                let account = ledger
+                    .account(id)
+                    .await?
+                    .ok_or(LedgerError::AccountNotFound(id))?;
+                let balance = ledger.account_balance(id).await?;
+                Ok(AccountWithBalance { account, balance })
+            })
+        })
         .await?;
     Ok(Json(with_balance))
 }

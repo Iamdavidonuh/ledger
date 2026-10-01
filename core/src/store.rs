@@ -24,7 +24,9 @@ pub trait LedgerStore: Send + Sync + 'static {
         id: AccountId,
     ) -> impl Future<Output = Result<Option<Account>, LedgerError>> + Send + '_;
 
-    fn all_accounts(&mut self) -> impl Future<Output = Result<Vec<Account>, LedgerError>> + Send + '_;
+    fn all_accounts(
+        &mut self,
+    ) -> impl Future<Output = Result<Vec<Account>, LedgerError>> + Send + '_;
 
     fn save_entry(
         &mut self,
@@ -57,10 +59,7 @@ pub trait LedgerStore: Send + Sync + 'static {
         entry_id: EntryId,
     ) -> impl Future<Output = Result<Vec<EntryPart>, LedgerError>> + Send + '_;
 
-    fn save_pot(
-        &mut self,
-        pot: Pot,
-    ) -> impl Future<Output = Result<(), LedgerError>> + Send + '_;
+    fn save_pot(&mut self, pot: Pot) -> impl Future<Output = Result<(), LedgerError>> + Send + '_;
 
     fn get_pot(
         &mut self,
@@ -110,7 +109,8 @@ pub trait LedgerStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Option<Import>, LedgerError>> + Send + '_;
 
     /// Every import, oldest upload first.
-    fn all_imports(&mut self) -> impl Future<Output = Result<Vec<Import>, LedgerError>> + Send + '_;
+    fn all_imports(&mut self)
+        -> impl Future<Output = Result<Vec<Import>, LedgerError>> + Send + '_;
 
     fn delete_import(
         &mut self,
@@ -234,7 +234,10 @@ impl LedgerStore for InMemoryStore {
         Ok(self.entries.get(&id).cloned())
     }
 
-    async fn entries_for_account(&mut self, account_id: AccountId) -> Result<Vec<Entry>, LedgerError> {
+    async fn entries_for_account(
+        &mut self,
+        account_id: AccountId,
+    ) -> Result<Vec<Entry>, LedgerError> {
         Ok(self
             .entries
             .values()
@@ -357,7 +360,10 @@ impl LedgerStore for InMemoryStore {
         Ok(())
     }
 
-    async fn get_queue_row(&mut self, id: QueueRowId) -> Result<Option<ImportQueueRow>, LedgerError> {
+    async fn get_queue_row(
+        &mut self,
+        id: QueueRowId,
+    ) -> Result<Option<ImportQueueRow>, LedgerError> {
         Ok(self.queue_rows.get(&id).cloned())
     }
 
@@ -491,10 +497,8 @@ mod tests {
 
     #[tokio::test]
     async fn queue_rows_come_back_for_their_import_by_date_then_time() {
-        contract::queue_rows_come_back_for_their_import_by_date_then_time(
-            InMemoryStore::default(),
-        )
-        .await;
+        contract::queue_rows_come_back_for_their_import_by_date_then_time(InMemoryStore::default())
+            .await;
     }
 
     #[tokio::test]
@@ -651,10 +655,7 @@ pub(crate) mod import_contract {
     pub async fn an_import_round_trips<S: LedgerStore>(mut store: S) {
         let import = an_import(an_account(&mut store).await);
         store.save_import(import.clone()).await.unwrap();
-        assert_eq!(
-            store.get_import(import.id).await,
-            Ok(Some(import.clone()))
-        );
+        assert_eq!(store.get_import(import.id).await, Ok(Some(import.clone())));
         assert_eq!(store.get_import(ImportId::generate()).await, Ok(None));
         assert_eq!(store.all_imports().await, Ok(vec![import.clone()]));
         store.delete_import(import.id).await.unwrap();
@@ -680,10 +681,7 @@ pub(crate) mod import_contract {
         store.save_import(done).await.unwrap();
         let other_account = an_account(&mut store).await;
         store.save_import(an_import(other_account)).await.unwrap();
-        assert_eq!(
-            store.incomplete_import_for_account(account).await,
-            Ok(None)
-        );
+        assert_eq!(store.incomplete_import_for_account(account).await, Ok(None));
         let open = an_import(account);
         store.save_import(open.clone()).await.unwrap();
         assert_eq!(
@@ -701,16 +699,10 @@ pub(crate) mod import_contract {
             category: Some("Food".to_string()),
         });
         store.save_queue_row(row.clone()).await.unwrap();
-        assert_eq!(
-            store.get_queue_row(row.id).await,
-            Ok(Some(row.clone()))
-        );
+        assert_eq!(store.get_queue_row(row.id).await, Ok(Some(row.clone())));
         row.detail = RowDetail::RevertedCandidate;
         store.save_queue_row(row.clone()).await.unwrap();
-        assert_eq!(
-            store.get_queue_row(row.id).await,
-            Ok(Some(row.clone()))
-        );
+        assert_eq!(store.get_queue_row(row.id).await, Ok(Some(row.clone())));
         store.delete_queue_row(row.id).await.unwrap();
         assert_eq!(store.get_queue_row(row.id).await, Ok(None));
     }
@@ -777,11 +769,13 @@ pub(crate) mod import_contract {
         for m in [&ours_to_row, &ours_to_entry, &theirs_to_entry] {
             store.save_queue_row_match(m.clone()).await.unwrap();
         }
-        let import_id = store.get_queue_row(ours[0]).await.unwrap().unwrap().import_id;
-        let mut found = store
-            .queue_row_matches_for_import(import_id)
+        let import_id = store
+            .get_queue_row(ours[0])
             .await
-            .unwrap();
+            .unwrap()
+            .unwrap()
+            .import_id;
+        let mut found = store.queue_row_matches_for_import(import_id).await.unwrap();
         found.sort_by_key(|m| m.id);
         let mut expected = vec![ours_to_row, ours_to_entry];
         expected.sort_by_key(|m| m.id);
@@ -801,10 +795,7 @@ pub(crate) mod import_contract {
         for m in [&a_to_b, &b_to_a, &b_to_entry] {
             store.save_queue_row_match(m.clone()).await.unwrap();
         }
-        store
-            .repoint_queue_row_matches(a, new_entry)
-            .await
-            .unwrap();
+        store.repoint_queue_row_matches(a, new_entry).await.unwrap();
         assert_eq!(
             store.get_queue_row_match(b_to_a.id).await,
             Ok(Some(ImportQueueRowMatch {
@@ -815,10 +806,7 @@ pub(crate) mod import_contract {
                 },
             }))
         );
-        assert_eq!(
-            store.get_queue_row_match(a_to_b.id).await,
-            Ok(Some(a_to_b))
-        );
+        assert_eq!(store.get_queue_row_match(a_to_b.id).await, Ok(Some(a_to_b)));
         assert_eq!(
             store.get_queue_row_match(b_to_entry.id).await,
             Ok(Some(b_to_entry))

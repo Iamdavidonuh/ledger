@@ -32,14 +32,18 @@ async fn create_transfer<S: WithLedger>(
     AppJson(req): AppJson<TransferRequest>,
 ) -> Result<Json<TransferResponse>, AppError> {
     let (out_entry, in_entry) = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.transfer(Transfer::new(
-                TransferLeg::new(req.from_account_id, req.amount_sent),
-                TransferLeg::new(req.to_account_id, req.amount_received),
-                req.date,
-                req.description,
-            )).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .transfer(Transfer::new(
+                        TransferLeg::new(req.from_account_id, req.amount_sent),
+                        TransferLeg::new(req.to_account_id, req.amount_received),
+                        req.date,
+                        req.description,
+                    ))
+                    .await
+            })
+        })
         .await?;
     Ok(Json(TransferResponse {
         out_entry,

@@ -81,14 +81,18 @@ async fn record_entry<S: WithLedger>(
 ) -> Result<Json<Entry>, AppError> {
     require_non_negative(req.amount)?;
     let entry = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.record_manual_entry(
-                req.account_id,
-                req.date,
-                req.kind.signed(req.amount),
-                &req.description,
-            ).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .record_manual_entry(
+                        req.account_id,
+                        req.date,
+                        req.kind.signed(req.amount),
+                        &req.description,
+                    )
+                    .await
+            })
+        })
         .await?;
     Ok(Json(entry))
 }
@@ -98,9 +102,7 @@ async fn list_entries<S: WithLedger>(
     Query(q): Query<AccountIdQuery>,
 ) -> Result<Json<Vec<Entry>>, AppError> {
     let entries = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.entries(q.account_id).await
-        }))
+        .with_ledger(move |ledger| Box::pin(async move { ledger.entries(q.account_id).await }))
         .await?;
     Ok(Json(entries))
 }
@@ -111,17 +113,21 @@ async fn update_metadata<S: WithLedger>(
     AppJson(req): AppJson<UpdateEntryMetadataRequest>,
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.update_entry_metadata(
-                id,
-                EntryMetadata {
-                    category: req.category,
-                    tags: req.tags,
-                    note: req.note,
-                    pot_id: req.pot_id,
-                },
-            ).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .update_entry_metadata(
+                        id,
+                        EntryMetadata {
+                            category: req.category,
+                            tags: req.tags,
+                            note: req.note,
+                            pot_id: req.pot_id,
+                        },
+                    )
+                    .await
+            })
+        })
         .await?;
     Ok(Json(entry))
 }
@@ -133,9 +139,13 @@ async fn edit_amount<S: WithLedger>(
 ) -> Result<Json<Entry>, AppError> {
     require_non_negative(req.amount)?;
     let entry = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.edit_manual_entry_amount(id, req.kind.signed(req.amount)).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .edit_manual_entry_amount(id, req.kind.signed(req.amount))
+                    .await
+            })
+        })
         .await?;
     Ok(Json(entry))
 }
@@ -146,9 +156,9 @@ async fn void_entry<S: WithLedger>(
     AppJson(req): AppJson<VoidRequest>,
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.void_entry(id, &req.reason).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move { ledger.void_entry(id, &req.reason).await })
+        })
         .await?;
     Ok(Json(entry))
 }
@@ -158,9 +168,7 @@ async fn confirm_entry<S: WithLedger>(
     Path(id): Path<EntryId>,
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.confirm_entry(id).await
-        }))
+        .with_ledger(move |ledger| Box::pin(async move { ledger.confirm_entry(id).await }))
         .await?;
     Ok(Json(entry))
 }

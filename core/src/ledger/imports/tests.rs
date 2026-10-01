@@ -213,12 +213,7 @@ fn suggested_category(view: &QueueRowView) -> Option<String> {
 }
 
 async fn is_completed<S: LedgerStore>(ledger: &mut Ledger<S>, import: &Import) -> bool {
-    ledger
-        .import(import.id)
-        .await
-        .unwrap()
-        .unwrap()
-        .completed
+    ledger.import(import.id).await.unwrap().unwrap().completed
 }
 
 // ---- stage_import ----
@@ -234,10 +229,7 @@ async fn staging_saves_the_import_and_its_queue_without_touching_the_ledger() {
         (vec![a, r], matches)
     })
     .await;
-    assert_eq!(
-        ledger.import(import.id).await,
-        Ok(Some(import.clone()))
-    );
+    assert_eq!(ledger.import(import.id).await, Ok(Some(import.clone())));
     assert_eq!(queue(&mut ledger, &import).await.len(), 2);
     assert_eq!(
         ledger.entries(account.id).await.unwrap(),
@@ -318,7 +310,14 @@ async fn a_failed_stage_writes_nothing_at_all() {
     assert_eq!(result, Err(LedgerError::IncompleteImportExists));
     assert_eq!(ledger.import(import.id).await, Ok(None));
     assert_eq!(ledger.store.get_queue_row(row.id).await, Ok(None));
-    assert_eq!(ledger.incomplete_import_for_account(account.id).await.unwrap().map(|i| i.id != import.id), Some(true));
+    assert_eq!(
+        ledger
+            .incomplete_import_for_account(account.id)
+            .await
+            .unwrap()
+            .map(|i| i.id != import.id),
+        Some(true)
+    );
 }
 
 // ---- reads ----
@@ -601,10 +600,7 @@ async fn a_voided_entrys_category_does_not_drive_a_suggestion() {
         )
         .await
         .unwrap();
-    ledger
-        .void_entry(old.id, "wrong account")
-        .await
-        .unwrap();
+    ledger.void_entry(old.id, "wrong account").await.unwrap();
     let (import, rows) = stage(&mut ledger, &account, |i| {
         (vec![normal(i, day(2), None, dec!(-4), "Bakery")], vec![])
     })
@@ -651,9 +647,7 @@ async fn accept_needs_a_normal_row_in_that_import() {
     );
     let missing_row = QueueRowId::generate();
     assert_eq!(
-        ledger
-            .accept_queue_row(import.id, missing_row, None)
-            .await,
+        ledger.accept_queue_row(import.id, missing_row, None).await,
         Err(LedgerError::QueueRowNotFound(missing_row))
     );
     assert_eq!(queue(&mut ledger, &import).await.len(), 1);
@@ -690,19 +684,10 @@ async fn a_row_id_from_a_different_import_is_not_found() {
         Err(LedgerError::QueueRowNotFound(foreign))
     );
     assert_eq!(
-        ledger
-            .resolve_reverted_candidate(import.id, foreign)
-            .await,
+        ledger.resolve_reverted_candidate(import.id, foreign).await,
         Err(LedgerError::QueueRowNotFound(foreign))
     );
-    assert!(
-        ledger
-            .store
-            .get_queue_row(foreign)
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(ledger.store.get_queue_row(foreign).await.unwrap().is_some());
 }
 
 // ---- sibling matches ----
@@ -732,14 +717,12 @@ async fn accepting_one_of_two_matched_rows_repoints_the_sibling_at_the_new_entry
     assert_eq!(view.len(), 1);
     assert!(is_suspicious(&view[0]));
     assert_eq!(matched(&view[0]), (vec![entry.id], vec![]));
-    assert!(
-        ledger
-            .store
-            .queue_row_matches_referencing(rows[0].id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(ledger
+        .store
+        .queue_row_matches_referencing(rows[0].id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -819,18 +802,9 @@ async fn an_outgoing_row_accepted_as_transfer_sends_from_this_account() {
     );
     assert_eq!(out_entry.date, day(2));
     assert_eq!(out_entry.description, "To savings");
-    assert_eq!(
-        ledger.account_balance(account.id).await,
-        Ok(dec!(60))
-    );
-    assert_eq!(
-        ledger.account_balance(savings.id).await,
-        Ok(dec!(40))
-    );
-    assert_eq!(
-        ledger.store.get_queue_row(rows[0].id).await,
-        Ok(None)
-    );
+    assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(60)));
+    assert_eq!(ledger.account_balance(savings.id).await, Ok(dec!(40)));
+    assert_eq!(ledger.store.get_queue_row(rows[0].id).await, Ok(None));
     assert!(is_completed(&mut ledger, &import).await);
 }
 
@@ -1031,19 +1005,14 @@ async fn resolving_a_matched_candidate_reverts_its_entry_and_clears_the_row() {
             .bank_state,
         BankState::Reverted
     );
-    assert_eq!(
-        ledger.account_balance(account.id).await,
-        Ok(dec!(100))
-    );
+    assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(100)));
     assert_eq!(ledger.store.get_queue_row(rc.id).await, Ok(None));
-    assert!(
-        ledger
-            .store
-            .queue_row_matches_referencing(rc.id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(ledger
+        .store
+        .queue_row_matches_referencing(rc.id)
+        .await
+        .unwrap()
+        .is_empty());
     assert!(is_completed(&mut ledger, &import).await);
 }
 
@@ -1106,24 +1075,17 @@ async fn resolving_against_an_already_reverted_entry_succeeds_without_rechecking
     ledger.store.save_entry(already.clone()).await.unwrap();
     let (import, rc) = a_candidate_matching(&mut ledger, &account, &already).await;
     assert_eq!(
-        ledger
-            .resolve_reverted_candidate(import.id, rc.id)
-            .await,
+        ledger.resolve_reverted_candidate(import.id, rc.id).await,
         Ok(already.clone())
     );
-    assert_eq!(
-        ledger.store.get_entry(income.id).await,
-        Ok(Some(already))
-    );
+    assert_eq!(ledger.store.get_entry(income.id).await, Ok(Some(already)));
     assert_eq!(ledger.store.get_queue_row(rc.id).await, Ok(None));
-    assert!(
-        ledger
-            .store
-            .queue_row_matches_referencing(rc.id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(ledger
+        .store
+        .queue_row_matches_referencing(rc.id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -1145,15 +1107,10 @@ async fn resolving_is_refused_when_reverting_would_push_a_pot_negative() {
         .unwrap();
     let (import, rc) = a_candidate_matching(&mut ledger, &account, &income).await;
     assert_eq!(
-        ledger
-            .resolve_reverted_candidate(import.id, rc.id)
-            .await,
+        ledger.resolve_reverted_candidate(import.id, rc.id).await,
         Err(LedgerError::PotWouldGoNegative)
     );
-    assert_eq!(
-        ledger.store.get_entry(income.id).await,
-        Ok(Some(income))
-    );
+    assert_eq!(ledger.store.get_entry(income.id).await, Ok(Some(income)));
     assert_eq!(ledger.pot_balance(pot.id).await, Ok(dec!(10)));
     assert_eq!(
         ledger.store.get_queue_row(rc.id).await,
@@ -1177,9 +1134,7 @@ async fn resolving_against_a_voided_entry_is_refused_and_leaves_the_row() {
     let (import, rc) = a_candidate_matching(&mut ledger, &account, &entry).await;
     ledger.void_entry(entry.id, "duplicate").await.unwrap();
     assert_eq!(
-        ledger
-            .resolve_reverted_candidate(import.id, rc.id)
-            .await,
+        ledger.resolve_reverted_candidate(import.id, rc.id).await,
         Err(LedgerError::AlreadyVoided)
     );
     assert_eq!(ledger.store.get_queue_row(rc.id).await, Ok(Some(rc)));
@@ -1190,22 +1145,14 @@ async fn discarding_a_matched_candidate_does_not_revert_its_entry() {
     let (mut ledger, account) = setup().await;
     let entry = a_timed_entry(&mut ledger, &account, dec!(-30)).await;
     let (import, rc) = a_candidate_matching(&mut ledger, &account, &entry).await;
-    ledger
-        .discard_queue_row(import.id, rc.id)
+    ledger.discard_queue_row(import.id, rc.id).await.unwrap();
+    assert_eq!(ledger.store.get_entry(entry.id).await, Ok(Some(entry)));
+    assert!(ledger
+        .store
+        .queue_row_matches_referencing(rc.id)
         .await
-        .unwrap();
-    assert_eq!(
-        ledger.store.get_entry(entry.id).await,
-        Ok(Some(entry))
-    );
-    assert!(
-        ledger
-            .store
-            .queue_row_matches_referencing(rc.id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+        .unwrap()
+        .is_empty());
     assert!(is_completed(&mut ledger, &import).await);
 }
 
@@ -1256,14 +1203,12 @@ async fn bulk_accept_is_blocked_while_suspicious_or_candidate_rows_remain() {
             reverted_candidate_count: 1
         })
     );
-    assert!(
-        ledger
-            .store
-            .get_queue_row(rows[2].id)
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(ledger
+        .store
+        .get_queue_row(rows[2].id)
+        .await
+        .unwrap()
+        .is_some());
     assert_eq!(ledger.entries(account.id).await.unwrap().len(), 1);
     ledger
         .resolve_reverted_candidate(import.id, rows[2].id)
@@ -1340,22 +1285,18 @@ async fn discard_import_removes_all_rows_and_marks_it_complete() {
     .await;
     assert_eq!(ledger.discard_import(import.id).await, Ok(2));
     assert!(is_completed(&mut ledger, &import).await);
-    assert!(
-        ledger
-            .store
-            .get_queue_row(rows[0].id)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        ledger
-            .store
-            .get_queue_row(rows[1].id)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(ledger
+        .store
+        .get_queue_row(rows[0].id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(ledger
+        .store
+        .get_queue_row(rows[1].id)
+        .await
+        .unwrap()
+        .is_none());
     assert!(ledger.entries(account.id).await.unwrap().is_empty());
     assert_eq!(
         ledger.incomplete_import_for_account(account.id).await,

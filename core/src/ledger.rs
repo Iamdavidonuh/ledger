@@ -257,9 +257,7 @@ impl<S: LedgerStore> Ledger<S> {
                 transfer_account_id: None,
             })
             .collect();
-        self.store
-            .save_entry_parts(entry_id, built.clone())
-            .await?;
+        self.store.save_entry_parts(entry_id, built.clone()).await?;
         Ok(built)
     }
 
@@ -378,8 +376,7 @@ impl<S: LedgerStore> Ledger<S> {
     }
 
     pub async fn general_savings(&mut self, currency: &Currency) -> Result<Decimal, LedgerError> {
-        Ok(self.own_accounts_total(currency).await?
-            - self.pots_total(currency).await?)
+        Ok(self.own_accounts_total(currency).await? - self.pots_total(currency).await?)
     }
 
     pub async fn allocate_to_pot(
@@ -415,10 +412,7 @@ impl<S: LedgerStore> Ledger<S> {
         Ok(allocation)
     }
 
-    pub async fn transfer(
-        &mut self,
-        transfer: Transfer,
-    ) -> Result<(Entry, Entry), LedgerError> {
+    pub async fn transfer(&mut self, transfer: Transfer) -> Result<(Entry, Entry), LedgerError> {
         let (out_entry, in_entry) = self.build_transfer(&transfer).await?;
         self.store.begin().await?;
         let result = async {
@@ -428,7 +422,10 @@ impl<S: LedgerStore> Ledger<S> {
         .await;
         match result {
             Ok(()) => self.store.commit().await?,
-            Err(e) => { self.store.rollback().await?; return Err(e); }
+            Err(e) => {
+                self.store.rollback().await?;
+                return Err(e);
+            }
         }
         Ok((out_entry, in_entry))
     }
@@ -454,10 +451,7 @@ impl<S: LedgerStore> Ledger<S> {
     /// Validates a transfer and builds its two entries without saving
     /// either, so a caller can save them inside its own transaction
     /// (`transfer` itself, or accepting an import queue row as a transfer).
-    async fn build_transfer(
-        &mut self,
-        transfer: &Transfer,
-    ) -> Result<(Entry, Entry), LedgerError> {
+    async fn build_transfer(&mut self, transfer: &Transfer) -> Result<(Entry, Entry), LedgerError> {
         let (from_id, to_id) = (transfer.from.account_id, transfer.to.account_id);
         if from_id == to_id {
             return Err(LedgerError::TransferToSelfNotAllowed);
@@ -494,10 +488,7 @@ impl<S: LedgerStore> Ledger<S> {
         Ok((out_entry, in_entry))
     }
 
-    pub async fn current_value(
-        &mut self,
-        account_id: AccountId,
-    ) -> Result<Decimal, LedgerError> {
+    pub async fn current_value(&mut self, account_id: AccountId) -> Result<Decimal, LedgerError> {
         let account = self
             .store
             .get_account(account_id)
@@ -539,7 +530,10 @@ impl<S: LedgerStore> Ledger<S> {
         .await;
         match result {
             Ok(()) => self.store.commit().await?,
-            Err(e) => { self.store.rollback().await?; return Err(e); }
+            Err(e) => {
+                self.store.rollback().await?;
+                return Err(e);
+            }
         }
         Ok(valuation)
     }
@@ -686,9 +680,7 @@ mod tests {
             .await
             .unwrap();
         ledger.confirm_entry(entry.id).await.unwrap();
-        let result = ledger
-            .edit_manual_entry_amount(entry.id, dec!(-45.0))
-            .await;
+        let result = ledger.edit_manual_entry_amount(entry.id, dec!(-45.0)).await;
         assert_eq!(result, Err(LedgerError::EntryLocked));
     }
 
@@ -785,10 +777,7 @@ mod tests {
             .record_manual_entry(account.id, a_date(), dec!(-20), "x")
             .await
             .unwrap();
-        ledger
-            .void_entry(entry.id, "first reason")
-            .await
-            .unwrap();
+        ledger.void_entry(entry.id, "first reason").await.unwrap();
         assert_eq!(
             ledger.void_entry(entry.id, "second reason").await,
             Err(LedgerError::AlreadyVoided)
@@ -836,9 +825,7 @@ mod tests {
     }
 
     /// A pot holding 20: +50 income and -30 expense, both tagged to it.
-    async fn a_pot_holding_twenty<S: LedgerStore>(
-        ledger: &mut Ledger<S>,
-    ) -> (Account, Pot, Entry) {
+    async fn a_pot_holding_twenty<S: LedgerStore>(ledger: &mut Ledger<S>) -> (Account, Pot, Entry) {
         let eur = Currency::new("EUR").unwrap();
         let checking = ledger
             .open_account("Checking", eur.clone(), AccountKind::Own, dec!(1000))
@@ -887,8 +874,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn editing_the_amount_of_a_reverted_pot_tagged_entry_does_not_count_it_against_the_pot()
-    {
+    async fn editing_the_amount_of_a_reverted_pot_tagged_entry_does_not_count_it_against_the_pot() {
         let mut ledger = Ledger::new(InMemoryStore::default());
         let (checking, pot, _) = a_pot_holding_twenty(&mut ledger).await;
         let expense = ledger
@@ -1010,10 +996,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(parts.len(), 2);
-        assert_eq!(
-            ledger.parts_for_entry(entry.id).await.unwrap().len(),
-            2
-        );
+        assert_eq!(ledger.parts_for_entry(entry.id).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -1032,11 +1015,7 @@ mod tests {
             .split_entry(entry.id, vec![(dec!(-300), None), (dec!(-100), None)])
             .await;
         assert_eq!(result, Err(LedgerError::PartsDoNotSumToAmount));
-        assert!(ledger
-            .parts_for_entry(entry.id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(ledger.parts_for_entry(entry.id).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1051,10 +1030,7 @@ mod tests {
             .record_manual_entry(account.id, a_date(), dec!(-425), "Mixed payment")
             .await
             .unwrap();
-        ledger
-            .void_entry(entry.id, "wrong account")
-            .await
-            .unwrap();
+        ledger.void_entry(entry.id, "wrong account").await.unwrap();
         let result = ledger
             .split_entry(entry.id, vec![(dec!(-300), None), (dec!(-125), None)])
             .await;
@@ -1104,13 +1080,8 @@ mod tests {
             .open_pot("Emergency fund", eur.clone(), None, None)
             .await
             .unwrap();
-        let result = ledger
-            .allocate_to_pot(pot.id, dec!(100.01), a_date())
-            .await;
-        assert_eq!(
-            result,
-            Err(LedgerError::GeneralSavingsWouldGoNegative(eur))
-        );
+        let result = ledger.allocate_to_pot(pot.id, dec!(100.01), a_date()).await;
+        assert_eq!(result, Err(LedgerError::GeneralSavingsWouldGoNegative(eur)));
         assert_eq!(ledger.pot_balance(pot.id).await, Ok(dec!(0)));
     }
 
@@ -1369,10 +1340,7 @@ mod tests {
             .record_manual_entry(checking.id, a_date(), dec!(-20), "x")
             .await
             .unwrap();
-        ledger
-            .void_entry(entry.id, "wrong amount")
-            .await
-            .unwrap();
+        ledger.void_entry(entry.id, "wrong amount").await.unwrap();
         let result = ledger
             .update_entry_metadata(
                 entry.id,
@@ -1430,9 +1398,7 @@ mod tests {
             .unwrap();
         assert_eq!(ledger.pot_balance(pot.id).await, Ok(dec!(400)));
 
-        let result = ledger
-            .edit_manual_entry_amount(entry.id, dec!(-600))
-            .await;
+        let result = ledger.edit_manual_entry_amount(entry.id, dec!(-600)).await;
         assert_eq!(result, Err(LedgerError::PotWouldGoNegative));
         assert_eq!(ledger.pot_balance(pot.id).await, Ok(dec!(400)));
     }
@@ -1553,11 +1519,7 @@ mod tests {
     async fn a_transfer_with_a_negative_amount_is_refused() {
         let (mut ledger, a, b) = two_euro_accounts().await;
         let result = ledger
-            .transfer(a_transfer(
-                leg(&a, dec!(-40)),
-                leg(&b, dec!(-40)),
-                "move",
-            ))
+            .transfer(a_transfer(leg(&a, dec!(-40)), leg(&b, dec!(-40)), "move"))
             .await;
         assert_eq!(result, Err(LedgerError::TransferAmountMustBePositive));
         assert_eq!(ledger.account_balance(a.id).await, Ok(dec!(100)));
@@ -1647,15 +1609,13 @@ mod tests {
             .unwrap();
         assert_eq!(ledger.account_balance(a.id).await, Ok(dec!(100)));
         assert_eq!(ledger.account_balance(b.id).await, Ok(dec!(40)));
-        assert!(
-            !ledger
-                .store
-                .get_entry(in_entry.id)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_voided()
-        );
+        assert!(!ledger
+            .store
+            .get_entry(in_entry.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_voided());
     }
 
     #[tokio::test]
@@ -1710,10 +1670,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(
-            ledger.account_balance(checking.id).await,
-            Ok(dec!(-30))
-        );
+        assert_eq!(ledger.account_balance(checking.id).await, Ok(dec!(-30)));
     }
 
     #[tokio::test]

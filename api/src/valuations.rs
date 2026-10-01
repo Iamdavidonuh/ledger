@@ -15,7 +15,10 @@ pub struct UpdateValueRequest {
 }
 
 pub fn router<S: WithLedger>() -> Router<S> {
-    Router::new().route("/accounts/:id/current-value", post(update_current_value::<S>))
+    Router::new().route(
+        "/accounts/:id/current-value",
+        post(update_current_value::<S>),
+    )
 }
 
 async fn update_current_value<S: WithLedger>(
@@ -24,9 +27,13 @@ async fn update_current_value<S: WithLedger>(
     AppJson(req): AppJson<UpdateValueRequest>,
 ) -> Result<Json<Valuation>, AppError> {
     let valuation = state
-        .with_ledger(move |ledger| Box::pin(async move {
-            ledger.update_current_value(id, req.new_value, &req.category, req.date).await
-        }))
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .update_current_value(id, req.new_value, &req.category, req.date)
+                    .await
+            })
+        })
         .await?;
     Ok(Json(valuation))
 }

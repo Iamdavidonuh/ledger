@@ -13,7 +13,9 @@ use crate::pot::{Allocation, Pot};
 use crate::store::LedgerStore;
 use crate::valuation::Valuation;
 use rust_decimal::Decimal;
-use sqlx::{pool::PoolConnection, postgres::PgTransactionManager, PgPool, Postgres, TransactionManager};
+use sqlx::{
+    pool::PoolConnection, postgres::PgTransactionManager, PgPool, Postgres, TransactionManager,
+};
 use uuid::Uuid;
 
 impl From<sqlx::Error> for LedgerError {
@@ -220,7 +222,9 @@ impl LedgerStore for PgStore {
         // outside a transaction block is a Postgres error.
         let in_txn = PgTransactionManager::get_transaction_depth(&*self.conn) > 0;
         if in_txn {
-            sqlx::query("SAVEPOINT save_entry").execute(&mut *self.conn).await?;
+            sqlx::query("SAVEPOINT save_entry")
+                .execute(&mut *self.conn)
+                .await?;
         } else {
             self.begin().await?;
         }
@@ -283,7 +287,9 @@ impl LedgerStore for PgStore {
         match result {
             Ok(()) => {
                 if in_txn {
-                    sqlx::query("RELEASE SAVEPOINT save_entry").execute(&mut *self.conn).await?;
+                    sqlx::query("RELEASE SAVEPOINT save_entry")
+                        .execute(&mut *self.conn)
+                        .await?;
                 } else {
                     self.commit().await?;
                 }
@@ -291,8 +297,12 @@ impl LedgerStore for PgStore {
             }
             Err(e) => {
                 if in_txn {
-                    let _ = sqlx::query("ROLLBACK TO SAVEPOINT save_entry").execute(&mut *self.conn).await;
-                    let _ = sqlx::query("RELEASE SAVEPOINT save_entry").execute(&mut *self.conn).await;
+                    let _ = sqlx::query("ROLLBACK TO SAVEPOINT save_entry")
+                        .execute(&mut *self.conn)
+                        .await;
+                    let _ = sqlx::query("RELEASE SAVEPOINT save_entry")
+                        .execute(&mut *self.conn)
+                        .await;
                 } else {
                     self.rollback().await?;
                 }
@@ -319,7 +329,10 @@ impl LedgerStore for PgStore {
         entry_from_row(row, tags).map(Some)
     }
 
-    async fn entries_for_account(&mut self, account_id: AccountId) -> Result<Vec<Entry>, LedgerError> {
+    async fn entries_for_account(
+        &mut self,
+        account_id: AccountId,
+    ) -> Result<Vec<Entry>, LedgerError> {
         self.fetch_entries_where(
             "SELECT e.id, e.account_id, e.date, e.time, e.amount, e.currency,
                     e.description, e.note, e.category, e.pot_id, e.transfer_account_id,
@@ -356,7 +369,9 @@ impl LedgerStore for PgStore {
     ) -> Result<(), LedgerError> {
         let in_txn = PgTransactionManager::get_transaction_depth(&*self.conn) > 0;
         if in_txn {
-            sqlx::query("SAVEPOINT save_entry_parts").execute(&mut *self.conn).await?;
+            sqlx::query("SAVEPOINT save_entry_parts")
+                .execute(&mut *self.conn)
+                .await?;
         } else {
             self.begin().await?;
         }
@@ -386,7 +401,9 @@ impl LedgerStore for PgStore {
         match result {
             Ok(()) => {
                 if in_txn {
-                    sqlx::query("RELEASE SAVEPOINT save_entry_parts").execute(&mut *self.conn).await?;
+                    sqlx::query("RELEASE SAVEPOINT save_entry_parts")
+                        .execute(&mut *self.conn)
+                        .await?;
                 } else {
                     self.commit().await?;
                 }
@@ -394,8 +411,12 @@ impl LedgerStore for PgStore {
             }
             Err(e) => {
                 if in_txn {
-                    let _ = sqlx::query("ROLLBACK TO SAVEPOINT save_entry_parts").execute(&mut *self.conn).await;
-                    let _ = sqlx::query("RELEASE SAVEPOINT save_entry_parts").execute(&mut *self.conn).await;
+                    let _ = sqlx::query("ROLLBACK TO SAVEPOINT save_entry_parts")
+                        .execute(&mut *self.conn)
+                        .await;
+                    let _ = sqlx::query("RELEASE SAVEPOINT save_entry_parts")
+                        .execute(&mut *self.conn)
+                        .await;
                 } else {
                     self.rollback().await?;
                 }
@@ -656,7 +677,10 @@ impl LedgerStore for PgStore {
         Ok(())
     }
 
-    async fn get_queue_row(&mut self, id: QueueRowId) -> Result<Option<ImportQueueRow>, LedgerError> {
+    async fn get_queue_row(
+        &mut self,
+        id: QueueRowId,
+    ) -> Result<Option<ImportQueueRow>, LedgerError> {
         let row = sqlx::query_as::<_, QueueRowRow>(
             "SELECT id, import_id, kind, date, time, amount, currency, description, bank_state, category
              FROM import_queue_rows WHERE id = $1",
@@ -806,12 +830,11 @@ impl LedgerStore for PgStore {
 
 impl PgStore {
     async fn tags_for_entry(&mut self, entry_id: EntryId) -> Result<Vec<String>, LedgerError> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT tag FROM entry_tags WHERE entry_id = $1 ORDER BY tag",
-        )
-        .bind(uuid_to_pg(entry_id))
-        .fetch_all(&mut *self.conn)
-        .await?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT tag FROM entry_tags WHERE entry_id = $1 ORDER BY tag")
+                .bind(uuid_to_pg(entry_id))
+                .fetch_all(&mut *self.conn)
+                .await?;
         Ok(rows.into_iter().map(|(t,)| t).collect())
     }
 

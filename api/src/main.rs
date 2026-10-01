@@ -82,7 +82,12 @@ mod tests {
     #[tokio::test]
     async fn health_returns_ok() {
         let response = app(test_state())
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -92,12 +97,32 @@ mod tests {
     async fn a_full_flow_of_transfer_allocate_and_a_refused_overdraw_works_end_to_end() {
         let state = test_state();
 
-        let a = state.ledger.lock().await
-            .open_account("Checking", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(1000))
-            .await.unwrap().id;
-        let b = state.ledger.lock().await
-            .open_account("Savings", Currency::new("EUR").unwrap(), AccountKind::Own, dec!(0))
-            .await.unwrap().id;
+        let a = state
+            .ledger
+            .lock()
+            .await
+            .open_account(
+                "Checking",
+                Currency::new("EUR").unwrap(),
+                AccountKind::Own,
+                dec!(1000),
+            )
+            .await
+            .unwrap()
+            .id;
+        let b = state
+            .ledger
+            .lock()
+            .await
+            .open_account(
+                "Savings",
+                Currency::new("EUR").unwrap(),
+                AccountKind::Own,
+                dec!(0),
+            )
+            .await
+            .unwrap()
+            .id;
 
         let response = app(state.clone())
             .oneshot(
@@ -109,28 +134,43 @@ mod tests {
             .await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let pot = state.ledger.lock().await
+        let pot = state
+            .ledger
+            .lock()
+            .await
             .open_pot("Emergency fund", Currency::new("EUR").unwrap(), None, None)
-            .await.unwrap().id;
+            .await
+            .unwrap()
+            .id;
 
         let response = app(state.clone())
             .oneshot(
-                Request::builder().method("POST").uri(format!("/pots/{pot}/allocations"))
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pots/{pot}/allocations"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({"amount": "1000", "date": "2026-01-15"}).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({"amount": "1000", "date": "2026-01-15"}).to_string(),
+                    ))
                     .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
         let response = app(state)
             .oneshot(
-                Request::builder().method("POST").uri(format!("/pots/{pot}/allocations"))
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pots/{pot}/allocations"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({"amount": "0.01", "date": "2026-01-15"}).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({"amount": "0.01", "date": "2026-01-15"}).to_string(),
+                    ))
                     .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
@@ -140,26 +180,42 @@ mod tests {
         let eur = Currency::new("EUR").unwrap();
         let pot = {
             let mut ledger = state.ledger.lock().await;
-            ledger.open_account("Checking", eur.clone(), AccountKind::Own, dec!(500)).await.unwrap();
-            ledger.open_pot("Trip fund", eur.clone(), None, None).await.unwrap().id
+            ledger
+                .open_account("Checking", eur.clone(), AccountKind::Own, dec!(500))
+                .await
+                .unwrap();
+            ledger
+                .open_pot("Trip fund", eur.clone(), None, None)
+                .await
+                .unwrap()
+                .id
         };
 
         let response = app(state.clone())
             .oneshot(
-                Request::builder().method("POST").uri(format!("/pots/{pot}/allocations"))
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pots/{pot}/allocations"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::json!({"amount": "200", "date": "2026-01-15"}).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({"amount": "200", "date": "2026-01-15"}).to_string(),
+                    ))
                     .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
         let response = app(state.clone())
             .oneshot(
-                Request::builder().method("DELETE").uri(format!("/pots/{pot}"))
-                    .body(Body::empty()).unwrap(),
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/pots/{pot}"))
+                    .body(Body::empty())
+                    .unwrap(),
             )
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
         assert_eq!(
@@ -168,8 +224,14 @@ mod tests {
         );
 
         let response = app(state)
-            .oneshot(Request::builder().uri(format!("/pots/{pot}")).body(Body::empty()).unwrap())
-            .await.unwrap();
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pots/{pot}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

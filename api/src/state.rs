@@ -15,14 +15,12 @@ use tokio::sync::Mutex;
 pub trait WithLedger: Clone + Send + Sync + 'static {
     type Store: LedgerStore;
 
-    fn with_ledger<F, T>(
-        &self,
-        f: F,
-    ) -> impl Future<Output = Result<T, AppError>> + Send + '_
+    fn with_ledger<F, T>(&self, f: F) -> impl Future<Output = Result<T, AppError>> + Send + '_
     where
         for<'a> F: FnOnce(
             &'a mut Ledger<Self::Store>,
-        ) -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
         F: Send + 'static,
         T: Send + 'static;
 }
@@ -35,7 +33,9 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(pool: PgPool) -> Self {
-        AppState { pool: Arc::new(pool) }
+        AppState {
+            pool: Arc::new(pool),
+        }
     }
 }
 
@@ -46,7 +46,8 @@ impl WithLedger for AppState {
     where
         for<'a> F: FnOnce(
             &'a mut Ledger<PgStore>,
-        ) -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
         F: Send + 'static,
         T: Send + 'static,
     {
@@ -80,7 +81,8 @@ impl WithLedger for TestState {
     where
         for<'a> F: FnOnce(
             &'a mut Ledger<InMemoryStore>,
-        ) -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
+        )
+            -> Pin<Box<dyn Future<Output = Result<T, LedgerError>> + Send + 'a>>,
         F: Send + 'static,
         T: Send + 'static,
     {

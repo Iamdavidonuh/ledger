@@ -161,8 +161,7 @@ impl<S: LedgerStore> Ledger<S> {
         import_id: ImportId,
     ) -> Result<Vec<QueueRowView>, LedgerError> {
         let import = self.find_import(import_id).await?;
-        let matches =
-            MatchIndex::new(self.store.queue_row_matches_for_import(import_id).await?);
+        let matches = MatchIndex::new(self.store.queue_row_matches_for_import(import_id).await?);
         let history = self.category_history(import.account_id).await?;
         self.store
             .queue_rows_for_import(import_id)
@@ -216,7 +215,10 @@ impl<S: LedgerStore> Ledger<S> {
         .await;
         match result {
             Ok(()) => self.store.commit().await,
-            Err(e) => { self.store.rollback().await?; Err(e) }
+            Err(e) => {
+                self.store.rollback().await?;
+                Err(e)
+            }
         }
     }
 
@@ -239,9 +241,9 @@ impl<S: LedgerStore> Ledger<S> {
         };
         let account = self.account_of(&import).await?;
         let entry = Self::imported_entry(&account, &row, &NormalDetail { category, ..detail });
-        let removal =
-            self.plan_removal(&import, row_id, Removal::Accepted { entry_id: entry.id })
-                .await?;
+        let removal = self
+            .plan_removal(&import, row_id, Removal::Accepted { entry_id: entry.id })
+            .await?;
         self.store.begin().await?;
         let result = async {
             self.store.save_entry(entry.clone()).await?;
@@ -250,7 +252,10 @@ impl<S: LedgerStore> Ledger<S> {
         .await;
         match result {
             Ok(()) => self.store.commit().await?,
-            Err(e) => { self.store.rollback().await?; return Err(e); }
+            Err(e) => {
+                self.store.rollback().await?;
+                return Err(e);
+            }
         }
         Ok(entry)
     }
@@ -297,7 +302,10 @@ impl<S: LedgerStore> Ledger<S> {
         .await;
         match result {
             Ok(()) => self.store.commit().await?,
-            Err(e) => { self.store.rollback().await?; return Err(e); }
+            Err(e) => {
+                self.store.rollback().await?;
+                return Err(e);
+            }
         }
         Ok((out_entry, in_entry))
     }
@@ -332,7 +340,10 @@ impl<S: LedgerStore> Ledger<S> {
         .await;
         match result {
             Ok(()) => self.store.commit().await?,
-            Err(e) => { self.store.rollback().await?; return Err(e); }
+            Err(e) => {
+                self.store.rollback().await?;
+                return Err(e);
+            }
         }
         Ok(entry)
     }
@@ -350,7 +361,10 @@ impl<S: LedgerStore> Ledger<S> {
         let result = removal.apply(&mut self.store).await;
         match result {
             Ok(()) => self.store.commit().await,
-            Err(e) => { self.store.rollback().await?; Err(e) }
+            Err(e) => {
+                self.store.rollback().await?;
+                Err(e)
+            }
         }
     }
 
@@ -375,12 +389,20 @@ impl<S: LedgerStore> Ledger<S> {
             for row in &rows {
                 self.store.delete_queue_row(row.id).await?;
             }
-            self.store.save_import(Import { completed: true, ..import }).await
+            self.store
+                .save_import(Import {
+                    completed: true,
+                    ..import
+                })
+                .await
         }
         .await;
         match result {
             Ok(()) => self.store.commit().await?,
-            Err(e) => { self.store.rollback().await?; return Err(e); }
+            Err(e) => {
+                self.store.rollback().await?;
+                return Err(e);
+            }
         }
         Ok(discarded)
     }
@@ -389,13 +411,9 @@ impl<S: LedgerStore> Ledger<S> {
     /// Normal row or any RevertedCandidate row is still in the queue. Each
     /// row's category is its own saved one, else a suggestion from entries
     /// already in the ledger (not from rows accepted earlier in this call).
-    pub async fn bulk_accept_import(
-        &mut self,
-        import_id: ImportId,
-    ) -> Result<usize, LedgerError> {
+    pub async fn bulk_accept_import(&mut self, import_id: ImportId) -> Result<usize, LedgerError> {
         let import = self.find_import(import_id).await?;
-        let matches =
-            MatchIndex::new(self.store.queue_row_matches_for_import(import_id).await?);
+        let matches = MatchIndex::new(self.store.queue_row_matches_for_import(import_id).await?);
 
         let mut clean = Vec::new();
         let (mut suspicious_count, mut reverted_candidate_count) = (0, 0);
@@ -437,12 +455,20 @@ impl<S: LedgerStore> Ledger<S> {
             for id in row_ids {
                 self.store.delete_queue_row(id).await?;
             }
-            self.store.save_import(Import { completed: true, ..import }).await
+            self.store
+                .save_import(Import {
+                    completed: true,
+                    ..import
+                })
+                .await
         }
         .await;
         match result {
             Ok(()) => self.store.commit().await?,
-            Err(e) => { self.store.rollback().await?; return Err(e); }
+            Err(e) => {
+                self.store.rollback().await?;
+                return Err(e);
+            }
         }
         Ok(accepted)
     }
@@ -481,10 +507,7 @@ impl<S: LedgerStore> Ledger<S> {
     /// Returns the entry to save and whether it needs saving: an entry
     /// that is already Reverted comes back unchanged with `false`, and has
     /// already left any pot's balance, so it skips the pot check.
-    async fn prepare_revert(
-        &mut self,
-        entry_id: EntryId,
-    ) -> Result<(Entry, bool), LedgerError> {
+    async fn prepare_revert(&mut self, entry_id: EntryId) -> Result<(Entry, bool), LedgerError> {
         let mut entry = self
             .store
             .get_entry(entry_id)
@@ -611,22 +634,13 @@ impl<S: LedgerStore> Ledger<S> {
         how: Removal,
     ) -> Result<RowRemoval, LedgerError> {
         let (matches, repoint_to) = match how {
-            Removal::Accepted { entry_id } => {
-                (self.own_matches(row_id).await?, Some(entry_id))
-            }
+            Removal::Accepted { entry_id } => (self.own_matches(row_id).await?, Some(entry_id)),
             Removal::Dropped => (
-                self.store
-                    .queue_row_matches_referencing(row_id)
-                    .await?,
+                self.store.queue_row_matches_referencing(row_id).await?,
                 None,
             ),
         };
-        let is_last_row = self
-            .store
-            .queue_rows_for_import(import.id)
-            .await?
-            .len()
-            <= 1;
+        let is_last_row = self.store.queue_rows_for_import(import.id).await?.len() <= 1;
         Ok(RowRemoval {
             row_id,
             match_ids: matches.into_iter().map(|m| m.id).collect(),
