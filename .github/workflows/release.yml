@@ -1,9 +1,9 @@
 name: Release
 
-# Only release-please itself runs on every push to main, and it never
-# builds or pushes anything -- it just keeps an open PR up to date with a
-# changelog. Images only get built when that PR is actually merged, which
-# is what makes release_created true below.
+# release-please runs on every push to main and keeps open PRs up to date
+# with changelogs. Images are built only when a release PR is merged for
+# that specific package, so a frontend-only change never rebuilds the backend
+# image and vice versa.
 on:
   push:
     branches: [main]
@@ -11,24 +11,31 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  packages: write
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      backend_released: ${{ steps.release.outputs.release_created }}
+      backend_tag: ${{ steps.release.outputs.tag_name }}
+      frontend_released: ${{ steps.release.outputs['frontend--release_created'] }}
+      frontend_tag: ${{ steps.release.outputs['frontend--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-  build-and-push:
+  build-backend:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    if: ${{ needs.release-please.outputs.backend_released }}
     runs-on: ubuntu-latest
+    permissions:
+      packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.backend_tag }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -38,9 +45,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ghcr.io requires a lowercase path; the owner is hardcoded rather
-      # than derived from github.repository_owner, which GitHub Actions
-      # has no built-in way to lowercase.
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Build and push ledger-api
         uses: docker/build-push-action@v6
         with:
@@ -48,10 +56,33 @@ jobs:
           file: api/Dockerfile
           push: true
           tags: |
-            ghcr.io/iamdavidonuh/ledger-api:${{ needs.release-please.outputs.tag_name }}
-            ghcr.io/iamdavidonuh/ledger-api:latest
+            ghcr.io/${{ steps.owner.outputs.name }}/ledger-api:${{ needs.release-please.outputs.backend_tag }}
+            ghcr.io/${{ steps.owner.outputs.name }}/ledger-api:latest
           cache-from: type=gha,scope=ledger-api
           cache-to: type=gha,mode=max,scope=ledger-api
+
+  build-frontend:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.frontend_released }}
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.frontend_tag }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase owner
+        id: owner
+        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       - name: Build and push ledger-frontend
         uses: docker/build-push-action@v6
@@ -60,7 +91,7 @@ jobs:
           file: frontend/Dockerfile
           push: true
           tags: |
-            ghcr.io/iamdavidonuh/ledger-frontend:${{ needs.release-please.outputs.tag_name }}
-            ghcr.io/iamdavidonuh/ledger-frontend:latest
+            ghcr.io/${{ steps.owner.outputs.name }}/ledger-frontend:${{ needs.release-please.outputs.frontend_tag }}
+            ghcr.io/${{ steps.owner.outputs.name }}/ledger-frontend:latest
           cache-from: type=gha,scope=ledger-frontend
           cache-to: type=gha,mode=max,scope=ledger-frontend

@@ -49,6 +49,6 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /build/target/release/ledger-api /usr/local/bin/ledger-api
 COPY --from=poppler /poppler-libs /
 ENV LEDGER_DB_PATH=/data/ledger.sqlite3
-ENV PATH=/usr/bin
+ENV PATH=/usr/local/bin:/usr/bin
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/ledger-api"]
