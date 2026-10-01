@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use crate::error::{AppError, AppJson};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::routing::post;
@@ -21,7 +21,7 @@ pub fn router() -> Router<AppState> {
 async fn update_current_value(
     State(state): State<AppState>,
     Path(id): Path<AccountId>,
-    Json(req): Json<UpdateValueRequest>,
+    AppJson(req): AppJson<UpdateValueRequest>,
 ) -> Result<Json<Valuation>, AppError> {
     let valuation = state
         .with_ledger(move |ledger| {

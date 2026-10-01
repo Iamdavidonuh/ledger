@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use crate::error::{AppError, AppJson};
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::routing::{patch, post};
@@ -77,7 +77,7 @@ pub fn router() -> Router<AppState> {
 
 async fn record_entry(
     State(state): State<AppState>,
-    Json(req): Json<RecordEntryRequest>,
+    AppJson(req): AppJson<RecordEntryRequest>,
 ) -> Result<Json<Entry>, AppError> {
     require_non_negative(req.amount)?;
     let entry = state
@@ -106,7 +106,7 @@ async fn list_entries(
 async fn update_metadata(
     State(state): State<AppState>,
     Path(id): Path<EntryId>,
-    Json(req): Json<UpdateEntryMetadataRequest>,
+    AppJson(req): AppJson<UpdateEntryMetadataRequest>,
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
         .with_ledger(move |ledger| {
@@ -127,7 +127,7 @@ async fn update_metadata(
 async fn edit_amount(
     State(state): State<AppState>,
     Path(id): Path<EntryId>,
-    Json(req): Json<EditAmountRequest>,
+    AppJson(req): AppJson<EditAmountRequest>,
 ) -> Result<Json<Entry>, AppError> {
     require_non_negative(req.amount)?;
     let entry = state
@@ -139,7 +139,7 @@ async fn edit_amount(
 async fn void_entry(
     State(state): State<AppState>,
     Path(id): Path<EntryId>,
-    Json(req): Json<VoidRequest>,
+    AppJson(req): AppJson<VoidRequest>,
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
         .with_ledger(move |ledger| ledger.void_entry(id, &req.reason))

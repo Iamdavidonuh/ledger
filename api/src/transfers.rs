@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use crate::error::{AppError, AppJson};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::routing::post;
@@ -29,7 +29,7 @@ pub fn router() -> Router<AppState> {
 
 async fn create_transfer(
     State(state): State<AppState>,
-    Json(req): Json<TransferRequest>,
+    AppJson(req): AppJson<TransferRequest>,
 ) -> Result<Json<TransferResponse>, AppError> {
     let (out_entry, in_entry) = state
         .with_ledger(move |ledger| {

@@ -91,7 +91,7 @@ async fn delete_pot(
 async fn allocate(
     State(state): State<AppState>,
     Path(id): Path<PotId>,
-    Json(req): Json<AllocateRequest>,
+    AppJson(req): AppJson<AllocateRequest>,
 ) -> Result<Json<PotWithBalance>, AppError> {
     let with_balance = state
         .with_ledger(move |ledger| {
