@@ -41,7 +41,10 @@ async fn test_state() -> Option<ledger_api::state::AppState> {
 /// Sends one HTTP request through the full Axum router and returns the
 /// response status and parsed JSON body. The state is cloned internally
 /// so the caller retains it for further calls.
-async fn send_api(state: &ledger_api::state::AppState, request: Request<Body>) -> (StatusCode, Value) {
+async fn send_api(
+    state: &ledger_api::state::AppState,
+    request: Request<Body>,
+) -> (StatusCode, Value) {
     let response = app(state.clone()).oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -136,7 +139,7 @@ async fn record_entry(
 /// Reads a fixture file from the importer test fixtures directory.
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(format!(
-        "{}/../../importer/tests/fixtures/{name}",
+        "{}/../importer/tests/fixtures/{name}",
         env!("CARGO_MANIFEST_DIR")
     ))
     .unwrap()
@@ -186,7 +189,9 @@ fn multipart_upload(
 
 #[tokio::test]
 async fn health_returns_ok() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let (status, _) = send_api(&state, get("/health")).await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -197,7 +202,9 @@ async fn health_returns_ok() {
 
 #[tokio::test]
 async fn create_and_get_account() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let id = create_account(&state, "Checking", "EUR", "own", "100").await;
 
     let (status, body) = send_api(&state, get(&format!("/accounts/{id}"))).await;
@@ -208,7 +215,9 @@ async fn create_and_get_account() {
 
 #[tokio::test]
 async fn list_accounts_includes_balances() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     create_account(&state, "EUR Account", "EUR", "own", "200").await;
     create_account(&state, "NGN Account", "NGN", "own", "50000").await;
 
@@ -219,17 +228,24 @@ async fn list_accounts_includes_balances() {
 
 #[tokio::test]
 async fn unknown_account_is_not_found() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let (status, _) = send_api(&state, get(&format!("/accounts/{}", Uuid::new_v4()))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn invalid_currency_is_bad_request() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let (status, _) = send_api(
         &state,
-        post("/accounts", json!({ "name": "Bad", "currency": "!", "kind": "own", "opening_balance": "0" })),
+        post(
+            "/accounts",
+            json!({ "name": "Bad", "currency": "!", "kind": "own", "opening_balance": "0" }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -241,7 +257,9 @@ async fn invalid_currency_is_bad_request() {
 
 #[tokio::test]
 async fn record_expense_and_income_update_balance() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account_id = create_account(&state, "Checking", "EUR", "own", "0").await;
 
     record_entry(&state, &account_id, "income", "500", "Salary").await;
@@ -253,7 +271,9 @@ async fn record_expense_and_income_update_balance() {
 
 #[tokio::test]
 async fn list_entries_filters_by_account() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let a = create_account(&state, "A", "EUR", "own", "0").await;
     let b = create_account(&state, "B", "EUR", "own", "0").await;
 
@@ -268,7 +288,9 @@ async fn list_entries_filters_by_account() {
 
 #[tokio::test]
 async fn negative_amount_is_bad_request() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account_id = create_account(&state, "Checking", "EUR", "own", "0").await;
     let (status, _) = send_api(
         &state,
@@ -283,14 +305,19 @@ async fn negative_amount_is_bad_request() {
 
 #[tokio::test]
 async fn void_entry_removes_it_from_balance() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account_id = create_account(&state, "Checking", "EUR", "own", "0").await;
     let entry = record_entry(&state, &account_id, "expense", "100", "Oops").await;
     let entry_id = entry["id"].as_str().unwrap();
 
     let (status, _) = send_api(
         &state,
-        post(&format!("/entries/{entry_id}/void"), json!({ "reason": "mistake" })),
+        post(
+            &format!("/entries/{entry_id}/void"),
+            json!({ "reason": "mistake" }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -301,7 +328,9 @@ async fn void_entry_removes_it_from_balance() {
 
 #[tokio::test]
 async fn update_entry_metadata_persists() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account_id = create_account(&state, "Checking", "EUR", "own", "0").await;
     let entry = record_entry(&state, &account_id, "expense", "30", "Coffee").await;
     let entry_id = entry["id"].as_str().unwrap();
@@ -321,16 +350,25 @@ async fn update_entry_metadata_persists() {
 
 #[tokio::test]
 async fn confirm_then_edit_amount_is_locked() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account_id = create_account(&state, "Checking", "EUR", "own", "0").await;
     let entry = record_entry(&state, &account_id, "expense", "10", "x").await;
     let entry_id = entry["id"].as_str().unwrap();
 
-    send_api(&state, post(&format!("/entries/{entry_id}/confirm"), json!({}))).await;
+    send_api(
+        &state,
+        post(&format!("/entries/{entry_id}/confirm"), json!({})),
+    )
+    .await;
 
     let (status, _) = send_api(
         &state,
-        patch(&format!("/entries/{entry_id}/amount"), json!({ "kind": "expense", "amount": "5" })),
+        patch(
+            &format!("/entries/{entry_id}/amount"),
+            json!({ "kind": "expense", "amount": "5" }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -342,12 +380,17 @@ async fn confirm_then_edit_amount_is_locked() {
 
 #[tokio::test]
 async fn create_pot_and_allocate() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     create_account(&state, "Savings", "EUR", "own", "1000").await;
 
     let (status, pot) = send_api(
         &state,
-        post("/pots", json!({ "name": "Trip", "currency": "EUR", "target": "500" })),
+        post(
+            "/pots",
+            json!({ "name": "Trip", "currency": "EUR", "target": "500" }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -355,7 +398,10 @@ async fn create_pot_and_allocate() {
 
     let (status, body) = send_api(
         &state,
-        post(&format!("/pots/{pot_id}/allocations"), json!({ "amount": "300", "date": "2026-01-15" })),
+        post(
+            &format!("/pots/{pot_id}/allocations"),
+            json!({ "amount": "300", "date": "2026-01-15" }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -364,7 +410,9 @@ async fn create_pot_and_allocate() {
 
 #[tokio::test]
 async fn allocating_more_than_savings_is_unprocessable() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     create_account(&state, "Savings", "EUR", "own", "100").await;
 
     let (_, pot) = send_api(
@@ -376,7 +424,10 @@ async fn allocating_more_than_savings_is_unprocessable() {
 
     let (status, _) = send_api(
         &state,
-        post(&format!("/pots/{pot_id}/allocations"), json!({ "amount": "101", "date": "2026-01-15" })),
+        post(
+            &format!("/pots/{pot_id}/allocations"),
+            json!({ "amount": "101", "date": "2026-01-15" }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -384,15 +435,24 @@ async fn allocating_more_than_savings_is_unprocessable() {
 
 #[tokio::test]
 async fn delete_pot_returns_balance_to_savings() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account_id = create_account(&state, "Savings", "EUR", "own", "500").await;
 
-    let (_, pot) = send_api(&state, post("/pots", json!({ "name": "Trip", "currency": "EUR" }))).await;
+    let (_, pot) = send_api(
+        &state,
+        post("/pots", json!({ "name": "Trip", "currency": "EUR" })),
+    )
+    .await;
     let pot_id = pot["id"].as_str().unwrap();
 
     send_api(
         &state,
-        post(&format!("/pots/{pot_id}/allocations"), json!({ "amount": "200", "date": "2026-01-15" })),
+        post(
+            &format!("/pots/{pot_id}/allocations"),
+            json!({ "amount": "200", "date": "2026-01-15" }),
+        ),
     )
     .await;
 
@@ -408,11 +468,21 @@ async fn delete_pot_returns_balance_to_savings() {
 
 #[tokio::test]
 async fn list_pots_shows_balances() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     create_account(&state, "Savings", "EUR", "own", "1000").await;
 
-    send_api(&state, post("/pots", json!({ "name": "A", "currency": "EUR" }))).await;
-    send_api(&state, post("/pots", json!({ "name": "B", "currency": "EUR" }))).await;
+    send_api(
+        &state,
+        post("/pots", json!({ "name": "A", "currency": "EUR" })),
+    )
+    .await;
+    send_api(
+        &state,
+        post("/pots", json!({ "name": "B", "currency": "EUR" })),
+    )
+    .await;
 
     let (status, body) = send_api(&state, get("/pots")).await;
     assert_eq!(status, StatusCode::OK);
@@ -425,7 +495,9 @@ async fn list_pots_shows_balances() {
 
 #[tokio::test]
 async fn transfer_moves_money_between_accounts() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let from = create_account(&state, "Checking", "EUR", "own", "1000").await;
     let to = create_account(&state, "Savings", "EUR", "own", "0").await;
 
@@ -456,7 +528,9 @@ async fn transfer_moves_money_between_accounts() {
 
 #[tokio::test]
 async fn transfer_to_self_is_unprocessable() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account = create_account(&state, "Checking", "EUR", "own", "100").await;
 
     let (status, _) = send_api(
@@ -479,7 +553,9 @@ async fn transfer_to_self_is_unprocessable() {
 
 #[tokio::test]
 async fn cross_currency_transfer_requires_different_amounts() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let eur = create_account(&state, "EUR", "EUR", "own", "200").await;
     let ngn = create_account(&state, "NGN", "NGN", "own", "0").await;
 
@@ -526,7 +602,9 @@ async fn cross_currency_transfer_requires_different_amounts() {
 
 #[tokio::test]
 async fn update_current_value_records_valuation() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account = create_account(&state, "ETF", "EUR", "investment", "1000").await;
 
     let (status, body) = send_api(
@@ -549,12 +627,19 @@ async fn update_current_value_records_valuation() {
 
 #[tokio::test]
 async fn upload_bank_a_statement_stages_queue() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account = create_account(&state, "Card", "EUR", "own", "150").await;
 
     let (status, body) = send_api(
         &state,
-        multipart_upload(&account, "BankA", "bank_a_statement.csv", fixture("bank_a_statement.csv")),
+        multipart_upload(
+            &account,
+            "BankA",
+            "bank_a_statement.csv",
+            fixture("bank_a_statement.csv"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -569,7 +654,9 @@ async fn upload_bank_a_statement_stages_queue() {
 
 #[tokio::test]
 async fn upload_to_unknown_account_is_not_found() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let (status, _) = send_api(
         &state,
         multipart_upload(
@@ -585,12 +672,19 @@ async fn upload_to_unknown_account_is_not_found() {
 
 #[tokio::test]
 async fn failed_balance_check_returns_422_and_saves_nothing() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account = create_account(&state, "Card", "EUR", "own", "0").await;
 
     let (status, body) = send_api(
         &state,
-        multipart_upload(&account, "BankA", "bank_a_bad_balance.csv", fixture("bank_a_bad_balance.csv")),
+        multipart_upload(
+            &account,
+            "BankA",
+            "bank_a_bad_balance.csv",
+            fixture("bank_a_bad_balance.csv"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -603,18 +697,30 @@ async fn failed_balance_check_returns_422_and_saves_nothing() {
 
 #[tokio::test]
 async fn second_upload_while_incomplete_is_conflict() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account = create_account(&state, "Card", "EUR", "own", "0").await;
 
     send_api(
         &state,
-        multipart_upload(&account, "BankA", "bank_a_statement.csv", fixture("bank_a_statement.csv")),
+        multipart_upload(
+            &account,
+            "BankA",
+            "bank_a_statement.csv",
+            fixture("bank_a_statement.csv"),
+        ),
     )
     .await;
 
     let (status, _) = send_api(
         &state,
-        multipart_upload(&account, "BankA", "bank_a_statement.csv", fixture("bank_a_statement.csv")),
+        multipart_upload(
+            &account,
+            "BankA",
+            "bank_a_statement.csv",
+            fixture("bank_a_statement.csv"),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -622,28 +728,39 @@ async fn second_upload_while_incomplete_is_conflict() {
 
 #[tokio::test]
 async fn accept_all_clean_rows_completes_import() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account = create_account(&state, "Card", "EUR", "own", "150").await;
 
     let (_, body) = send_api(
         &state,
-        multipart_upload(&account, "BankA", "bank_a_statement.csv", fixture("bank_a_statement.csv")),
+        multipart_upload(
+            &account,
+            "BankA",
+            "bank_a_statement.csv",
+            fixture("bank_a_statement.csv"),
+        ),
     )
     .await;
     let import_id = body["import_id"].as_str().unwrap();
 
-    // Discard the reverted candidate row first.
+    // Discard the reverted candidate row first. Deserialized into the real
+    // type rather than matched as a JSON string, so this can't drift from
+    // RowDetail's actual variant names or serde representation again.
     let (_, queue) = send_api(&state, get(&format!("/imports/{import_id}/queue"))).await;
+    let queue: Vec<ledger_core::QueueRowView> = serde_json::from_value(queue).unwrap();
     let candidate = queue
-        .as_array()
-        .unwrap()
         .iter()
-        .find(|r| r["kind"] == "reverted_candidate")
+        .find(|row| row.row.is_reverted_candidate())
         .unwrap();
-    let candidate_id = candidate["id"].as_str().unwrap();
+    let candidate_id = candidate.row.id.to_string();
     send_api(
         &state,
-        post(&format!("/imports/{import_id}/queue/{candidate_id}/discard"), json!({})),
+        post(
+            &format!("/imports/{import_id}/queue/{candidate_id}/discard"),
+            json!({}),
+        ),
     )
     .await;
 
@@ -667,19 +784,29 @@ async fn accept_all_clean_rows_completes_import() {
 
 #[tokio::test]
 async fn discard_all_completes_import_with_no_entries() {
-    let Some(state) = test_state().await else { return };
+    let Some(state) = test_state().await else {
+        return;
+    };
     let account = create_account(&state, "Card", "EUR", "own", "0").await;
 
     let (_, body) = send_api(
         &state,
-        multipart_upload(&account, "BankA", "bank_a_statement.csv", fixture("bank_a_statement.csv")),
+        multipart_upload(
+            &account,
+            "BankA",
+            "bank_a_statement.csv",
+            fixture("bank_a_statement.csv"),
+        ),
     )
     .await;
     let import_id = body["import_id"].as_str().unwrap();
 
     let (status, result) = send_api(
         &state,
-        post(&format!("/imports/{import_id}/queue/discard-all"), json!({})),
+        post(
+            &format!("/imports/{import_id}/queue/discard-all"),
+            json!({}),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

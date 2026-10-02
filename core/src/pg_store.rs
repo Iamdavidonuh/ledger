@@ -1201,42 +1201,80 @@ mod tests {
 
     #[tokio::test]
     async fn account_balance_and_manual_entries_persist() {
-        let Some(mut ledger) = test_ledger().await else { return };
-        let account = ledger.open_account("Checking", eur(), AccountKind::Own, dec!(100)).await.unwrap();
-        ledger.record_manual_entry(account.id, date(2026, 1, 1), dec!(-20), "Groceries").await.unwrap();
+        let Some(mut ledger) = test_ledger().await else {
+            return;
+        };
+        let account = ledger
+            .open_account("Checking", eur(), AccountKind::Own, dec!(100))
+            .await
+            .unwrap();
+        ledger
+            .record_manual_entry(account.id, date(2026, 1, 1), dec!(-20), "Groceries")
+            .await
+            .unwrap();
         assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(80)));
     }
 
     #[tokio::test]
     async fn voiding_an_entry_removes_it_from_the_balance() {
-        let Some(mut ledger) = test_ledger().await else { return };
-        let account = ledger.open_account("Checking", eur(), AccountKind::Own, dec!(0)).await.unwrap();
-        let entry = ledger.record_manual_entry(account.id, date(2026, 1, 1), dec!(-50), "Mistake").await.unwrap();
+        let Some(mut ledger) = test_ledger().await else {
+            return;
+        };
+        let account = ledger
+            .open_account("Checking", eur(), AccountKind::Own, dec!(0))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(account.id, date(2026, 1, 1), dec!(-50), "Mistake")
+            .await
+            .unwrap();
         ledger.void_entry(entry.id, "wrong amount").await.unwrap();
         assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(0)));
     }
 
     #[tokio::test]
     async fn transfer_saves_both_entries_atomically() {
-        let Some(mut ledger) = test_ledger().await else { return };
-        let a = ledger.open_account("A", eur(), AccountKind::Own, dec!(200)).await.unwrap();
-        let b = ledger.open_account("B", eur(), AccountKind::Own, dec!(0)).await.unwrap();
-        ledger.transfer(Transfer::new(
-            TransferLeg::new(a.id, dec!(50)),
-            TransferLeg::new(b.id, dec!(50)),
-            date(2026, 1, 1),
-            "move".to_string(),
-        )).await.unwrap();
+        let Some(mut ledger) = test_ledger().await else {
+            return;
+        };
+        let a = ledger
+            .open_account("A", eur(), AccountKind::Own, dec!(200))
+            .await
+            .unwrap();
+        let b = ledger
+            .open_account("B", eur(), AccountKind::Own, dec!(0))
+            .await
+            .unwrap();
+        ledger
+            .transfer(Transfer::new(
+                TransferLeg::new(a.id, dec!(50)),
+                TransferLeg::new(b.id, dec!(50)),
+                date(2026, 1, 1),
+                "move".to_string(),
+            ))
+            .await
+            .unwrap();
         assert_eq!(ledger.account_balance(a.id).await, Ok(dec!(150)));
         assert_eq!(ledger.account_balance(b.id).await, Ok(dec!(50)));
     }
 
     #[tokio::test]
     async fn pot_allocate_and_delete_return_balance_to_savings() {
-        let Some(mut ledger) = test_ledger().await else { return };
-        ledger.open_account("Savings", eur(), AccountKind::Own, dec!(500)).await.unwrap();
-        let pot = ledger.open_pot("Trip", eur(), Some(dec!(300)), None).await.unwrap();
-        ledger.allocate_to_pot(pot.id, dec!(200), date(2026, 1, 1)).await.unwrap();
+        let Some(mut ledger) = test_ledger().await else {
+            return;
+        };
+        ledger
+            .open_account("Savings", eur(), AccountKind::Own, dec!(500))
+            .await
+            .unwrap();
+        let pot = ledger
+            .open_pot("Trip", eur(), Some(dec!(300)), None)
+            .await
+            .unwrap();
+        ledger
+            .allocate_to_pot(pot.id, dec!(200), date(2026, 1, 1))
+            .await
+            .unwrap();
         assert_eq!(ledger.pot_balance(pot.id).await, Ok(dec!(200)));
         assert_eq!(ledger.general_savings(&eur()).await, Ok(dec!(300)));
         ledger.delete_pot(pot.id).await.unwrap();
@@ -1246,19 +1284,30 @@ mod tests {
 
     #[tokio::test]
     async fn entry_tags_round_trip() {
-        let Some(mut ledger) = test_ledger().await else { return };
-        let account = ledger.open_account("Checking", eur(), AccountKind::Own, dec!(0)).await.unwrap();
-        let entry = ledger.record_manual_entry(account.id, date(2026, 1, 1), dec!(-10), "Coffee").await.unwrap();
+        let Some(mut ledger) = test_ledger().await else {
+            return;
+        };
+        let account = ledger
+            .open_account("Checking", eur(), AccountKind::Own, dec!(0))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(account.id, date(2026, 1, 1), dec!(-10), "Coffee")
+            .await
+            .unwrap();
         use crate::entry::EntryMetadata;
-        let updated = ledger.update_entry_metadata(
-            entry.id,
-            EntryMetadata {
-                category: Some("Food".to_string()),
-                tags: vec!["morning".to_string(), "work".to_string()],
-                note: Some("nice place".to_string()),
-                pot_id: None,
-            },
-        ).await.unwrap();
+        let updated = ledger
+            .update_entry_metadata(
+                entry.id,
+                EntryMetadata {
+                    category: Some("Food".to_string()),
+                    tags: vec!["morning".to_string(), "work".to_string()],
+                    note: Some("nice place".to_string()),
+                    pot_id: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(updated.category, Some("Food".to_string()));
         let mut tags = updated.tags;
         tags.sort();
