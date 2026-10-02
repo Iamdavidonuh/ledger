@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ledger_test
+      POSTGRES_USER: ledger
+      POSTGRES_PASSWORD: ledger
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledger -d ledger_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  test:
+    image: rust:1-slim-bookworm
+    working_dir: /app
+    volumes:
+      - .:/app
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      DATABASE_URL: postgres://ledger:ledger@db:5432/ledger_test
+    command: >
+      cargo test --workspace -- --test-threads=1 2>&1
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  cargo-cache:

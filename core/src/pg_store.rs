@@ -1088,3 +1088,181 @@ fn match_from_row(r: MatchRow) -> Result<ImportQueueRowMatch, LedgerError> {
         target,
     })
 }
+
+/// Integration tests against a real Postgres. Skipped automatically when
+/// DATABASE_URL is not set, so `cargo test` in a plain dev environment
+/// still passes cleanly.
+///
+/// Run all integration tests with:
+///   docker compose -f docker-compose.test.yml run --rm test
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::account::AccountKind;
+    use crate::currency::Currency;
+    use crate::ledger::Ledger;
+    use crate::store::import_contract as contract;
+    use crate::transfer::{Transfer, TransferLeg};
+    use chrono::NaiveDate;
+    use rust_decimal_macros::dec;
+    use sqlx::PgPool;
+
+    const TRUNCATE: &str = "TRUNCATE accounts, entries, entry_tags, entry_parts, \
+        pots, allocations, valuations, imports, import_queue_rows, \
+        import_queue_row_matches CASCADE";
+
+    /// A live pool connected to DATABASE_URL, with migrations applied and all
+    /// tables wiped. Returns `None` when DATABASE_URL is not set so each test
+    /// can skip gracefully without failing.
+    async fn test_pool() -> Option<PgPool> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        let pool = PgPool::connect(&url).await.ok()?;
+        sqlx::migrate!("../core/migrations").run(&pool).await.ok()?;
+        sqlx::query(TRUNCATE).execute(&pool).await.ok()?;
+        Some(pool)
+    }
+
+    /// A fresh `PgStore` backed by a clean database. Each test that calls
+    /// this gets an independent store with no prior data.
+    async fn test_store() -> Option<PgStore> {
+        let pool = test_pool().await?;
+        PgStore::acquire(&pool).await.ok()
+    }
+
+    /// A `Ledger<PgStore>` backed by a clean database.
+    async fn test_ledger() -> Option<Ledger<PgStore>> {
+        test_store().await.map(Ledger::new)
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn eur() -> Currency {
+        Currency::new("EUR").unwrap()
+    }
+
+    // ---- store contract tests ------------------------------------------
+    // Each delegates to the shared pub async fn in core::store::import_contract
+    // so the same assertions run against both InMemoryStore and PgStore.
+
+    #[tokio::test]
+    async fn an_import_round_trips() {
+        let Some(s) = test_store().await else { return };
+        contract::an_import_round_trips(s).await;
+    }
+
+    #[tokio::test]
+    async fn resaving_an_import_updates_it() {
+        let Some(s) = test_store().await else { return };
+        contract::resaving_an_import_updates_it(s).await;
+    }
+
+    #[tokio::test]
+    async fn incomplete_import_for_account_ignores_completed_and_other_accounts() {
+        let Some(s) = test_store().await else { return };
+        contract::incomplete_import_for_account_ignores_completed_and_other_accounts(s).await;
+    }
+
+    #[tokio::test]
+    async fn a_queue_row_round_trips() {
+        let Some(s) = test_store().await else { return };
+        contract::a_queue_row_round_trips(s).await;
+    }
+
+    #[tokio::test]
+    async fn queue_rows_come_back_for_their_import_by_date_then_time() {
+        let Some(s) = test_store().await else { return };
+        contract::queue_rows_come_back_for_their_import_by_date_then_time(s).await;
+    }
+
+    #[tokio::test]
+    async fn matches_referencing_a_row_come_from_either_side() {
+        let Some(s) = test_store().await else { return };
+        contract::matches_referencing_a_row_come_from_either_side(s).await;
+    }
+
+    #[tokio::test]
+    async fn matches_for_an_import_are_those_of_its_own_rows() {
+        let Some(s) = test_store().await else { return };
+        contract::matches_for_an_import_are_those_of_its_own_rows(s).await;
+    }
+
+    #[tokio::test]
+    async fn repointing_rewrites_only_rows_that_pointed_at_the_queue_row() {
+        let Some(s) = test_store().await else { return };
+        contract::repointing_rewrites_only_rows_that_pointed_at_the_queue_row(s).await;
+    }
+
+    // ---- Ledger-level integration tests -----------------------------------
+    // These exercise domain logic paths that combine multiple store writes
+    // in a single transaction and verify the results round-trip through
+    // Postgres correctly.
+
+    #[tokio::test]
+    async fn account_balance_and_manual_entries_persist() {
+        let Some(mut ledger) = test_ledger().await else { return };
+        let account = ledger.open_account("Checking", eur(), AccountKind::Own, dec!(100)).await.unwrap();
+        ledger.record_manual_entry(account.id, date(2026, 1, 1), dec!(-20), "Groceries").await.unwrap();
+        assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(80)));
+    }
+
+    #[tokio::test]
+    async fn voiding_an_entry_removes_it_from_the_balance() {
+        let Some(mut ledger) = test_ledger().await else { return };
+        let account = ledger.open_account("Checking", eur(), AccountKind::Own, dec!(0)).await.unwrap();
+        let entry = ledger.record_manual_entry(account.id, date(2026, 1, 1), dec!(-50), "Mistake").await.unwrap();
+        ledger.void_entry(entry.id, "wrong amount").await.unwrap();
+        assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(0)));
+    }
+
+    #[tokio::test]
+    async fn transfer_saves_both_entries_atomically() {
+        let Some(mut ledger) = test_ledger().await else { return };
+        let a = ledger.open_account("A", eur(), AccountKind::Own, dec!(200)).await.unwrap();
+        let b = ledger.open_account("B", eur(), AccountKind::Own, dec!(0)).await.unwrap();
+        ledger.transfer(Transfer::new(
+            TransferLeg::new(a.id, dec!(50)),
+            TransferLeg::new(b.id, dec!(50)),
+            date(2026, 1, 1),
+            "move".to_string(),
+        )).await.unwrap();
+        assert_eq!(ledger.account_balance(a.id).await, Ok(dec!(150)));
+        assert_eq!(ledger.account_balance(b.id).await, Ok(dec!(50)));
+    }
+
+    #[tokio::test]
+    async fn pot_allocate_and_delete_return_balance_to_savings() {
+        let Some(mut ledger) = test_ledger().await else { return };
+        ledger.open_account("Savings", eur(), AccountKind::Own, dec!(500)).await.unwrap();
+        let pot = ledger.open_pot("Trip", eur(), Some(dec!(300)), None).await.unwrap();
+        ledger.allocate_to_pot(pot.id, dec!(200), date(2026, 1, 1)).await.unwrap();
+        assert_eq!(ledger.pot_balance(pot.id).await, Ok(dec!(200)));
+        assert_eq!(ledger.general_savings(&eur()).await, Ok(dec!(300)));
+        ledger.delete_pot(pot.id).await.unwrap();
+        assert_eq!(ledger.pot(pot.id).await, Ok(None));
+        assert_eq!(ledger.general_savings(&eur()).await, Ok(dec!(500)));
+    }
+
+    #[tokio::test]
+    async fn entry_tags_round_trip() {
+        let Some(mut ledger) = test_ledger().await else { return };
+        let account = ledger.open_account("Checking", eur(), AccountKind::Own, dec!(0)).await.unwrap();
+        let entry = ledger.record_manual_entry(account.id, date(2026, 1, 1), dec!(-10), "Coffee").await.unwrap();
+        use crate::entry::EntryMetadata;
+        let updated = ledger.update_entry_metadata(
+            entry.id,
+            EntryMetadata {
+                category: Some("Food".to_string()),
+                tags: vec!["morning".to_string(), "work".to_string()],
+                note: Some("nice place".to_string()),
+                pot_id: None,
+            },
+        ).await.unwrap();
+        assert_eq!(updated.category, Some("Food".to_string()));
+        let mut tags = updated.tags;
+        tags.sort();
+        assert_eq!(tags, vec!["morning".to_string(), "work".to_string()]);
+        assert_eq!(updated.note, Some("nice place".to_string()));
+    }
+}
