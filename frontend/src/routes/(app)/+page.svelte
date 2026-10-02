@@ -95,6 +95,16 @@
 		<Card class="border-warn-border bg-warn-bg">
 			<CardContent class="pt-5 text-sm text-warn-foreground">{error}</CardContent>
 		</Card>
+	{:else if accounts.length === 0}
+		<Card>
+			<CardContent class="flex flex-col items-center gap-3 py-10 text-center">
+				<div class="font-display text-lg font-bold">Add your first account</div>
+				<p class="max-w-xs text-sm text-muted">
+					Nothing to show yet. Add a bank account, cash, or anything else you track to get started.
+				</p>
+				<Button href="/accounts" class="mt-1">Add an account</Button>
+			</CardContent>
+		</Card>
 	{:else}
 		{#each [...netWorthByCurrency.entries()] as [currency, total] (currency)}
 			<Card>
