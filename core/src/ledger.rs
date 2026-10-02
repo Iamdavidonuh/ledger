@@ -75,6 +75,27 @@ impl<S: LedgerStore> Ledger<S> {
         self.store.get_account(id).await
     }
 
+    /// Archiving only hides an account from pickers for new entries,
+    /// transfers and imports (the frontend's job); it changes nothing
+    /// about the account itself, past entries, or balance math, and is
+    /// reversible. Setting the flag to what it already is is not an
+    /// error, unlike voiding an already-voided entry: nothing here has a
+    /// financial consequence to double-apply.
+    pub async fn set_account_archived(
+        &mut self,
+        id: AccountId,
+        archived: bool,
+    ) -> Result<Account, LedgerError> {
+        let mut account = self
+            .store
+            .get_account(id)
+            .await?
+            .ok_or(LedgerError::AccountNotFound(id))?;
+        account.archived = archived;
+        self.store.save_account(account.clone()).await?;
+        Ok(account)
+    }
+
     pub async fn pots(&mut self) -> Result<Vec<Pot>, LedgerError> {
         self.store.all_pots().await
     }
@@ -589,6 +610,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(100)));
+    }
+
+    #[tokio::test]
+    async fn archiving_an_account_sets_the_flag_and_unarchiving_clears_it() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let account = ledger
+            .open_account("Checking", eur, AccountKind::Own, dec!(0))
+            .await
+            .unwrap();
+        assert!(!account.archived);
+
+        let archived = ledger.set_account_archived(account.id, true).await.unwrap();
+        assert!(archived.archived);
+        assert!(ledger.account(account.id).await.unwrap().unwrap().archived);
+
+        let unarchived = ledger
+            .set_account_archived(account.id, false)
+            .await
+            .unwrap();
+        assert!(!unarchived.archived);
+    }
+
+    #[tokio::test]
+    async fn archiving_an_account_does_not_change_its_balance() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let account = ledger
+            .open_account("Checking", eur, AccountKind::Own, dec!(250))
+            .await
+            .unwrap();
+        ledger.set_account_archived(account.id, true).await.unwrap();
+        assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(250)));
+    }
+
+    #[tokio::test]
+    async fn archiving_an_unknown_account_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let unknown = AccountId::generate();
+        assert_eq!(
+            ledger.set_account_archived(unknown, true).await,
+            Err(LedgerError::AccountNotFound(unknown))
+        );
     }
 
     #[tokio::test]

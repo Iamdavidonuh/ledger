@@ -28,6 +28,8 @@ pub fn router<S: WithLedger>() -> Router<S> {
             post(create_account::<S>).get(list_accounts::<S>),
         )
         .route("/accounts/:id", get(get_account::<S>))
+        .route("/accounts/:id/archive", post(archive_account::<S>))
+        .route("/accounts/:id/unarchive", post(unarchive_account::<S>))
 }
 
 async fn create_account<S: WithLedger>(
@@ -82,6 +84,30 @@ async fn get_account<S: WithLedger>(
         })
         .await?;
     Ok(Json(with_balance))
+}
+
+async fn archive_account<S: WithLedger>(
+    State(state): State<S>,
+    Path(id): Path<AccountId>,
+) -> Result<Json<Account>, AppError> {
+    let account = state
+        .with_ledger(move |ledger| {
+            Box::pin(async move { ledger.set_account_archived(id, true).await })
+        })
+        .await?;
+    Ok(Json(account))
+}
+
+async fn unarchive_account<S: WithLedger>(
+    State(state): State<S>,
+    Path(id): Path<AccountId>,
+) -> Result<Json<Account>, AppError> {
+    let account = state
+        .with_ledger(move |ledger| {
+            Box::pin(async move { ledger.set_account_archived(id, false).await })
+        })
+        .await?;
+    Ok(Json(account))
 }
 
 #[cfg(test)]
@@ -174,6 +200,69 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("/accounts/{}", AccountId::generate()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn archiving_then_unarchiving_an_account_round_trips() {
+        let state = test_state();
+        let id = state
+            .ledger
+            .lock()
+            .await
+            .open_account(
+                "Checking",
+                Currency::new("EUR").unwrap(),
+                AccountKind::Own,
+                rust_decimal_macros::dec!(0),
+            )
+            .await
+            .unwrap()
+            .id;
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/accounts/{id}/archive"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let account: Account = serde_json::from_slice(&body).unwrap();
+        assert!(account.archived);
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/accounts/{id}/unarchive"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let account: Account = serde_json::from_slice(&body).unwrap();
+        assert!(!account.archived);
+    }
+
+    #[tokio::test]
+    async fn archiving_an_unknown_account_is_not_found() {
+        let response = app(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/accounts/{}/archive", AccountId::generate()))
                     .body(Body::empty())
                     .unwrap(),
             )

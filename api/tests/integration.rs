@@ -251,6 +251,44 @@ async fn invalid_currency_is_bad_request() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn archiving_then_unarchiving_an_account_round_trips() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let id = create_account(&state, "Checking", "EUR", "own", "0").await;
+
+    let (status, body) =
+        send_api(&state, post(&format!("/accounts/{id}/archive"), json!({}))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["archived"], true);
+
+    let (status, body) = send_api(&state, get(&format!("/accounts/{id}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["archived"], true);
+
+    let (status, body) = send_api(
+        &state,
+        post(&format!("/accounts/{id}/unarchive"), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["archived"], false);
+}
+
+#[tokio::test]
+async fn archiving_an_unknown_account_is_not_found() {
+    let Some(state) = test_state().await else {
+        return;
+    };
+    let (status, _) = send_api(
+        &state,
+        post(&format!("/accounts/{}/archive", Uuid::new_v4()), json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 // ---------------------------------------------------------------------------
 // Entries
 // ---------------------------------------------------------------------------
