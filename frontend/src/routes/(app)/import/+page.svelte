@@ -33,6 +33,10 @@
 		return accounts.find((account) => account.id === accountId);
 	});
 	const blockedAccountIds = $derived(openImports.map((item) => item.accountId));
+	// A new upload can only go into a still-active account; a review
+	// already in progress or an account's own history stays reachable via
+	// the full `accounts` list elsewhere on this page regardless.
+	const activeAccounts = $derived(accounts.filter((a) => !a.archived));
 
 	async function load() {
 		loading = true;
@@ -144,11 +148,15 @@
 				<Card class="border-warn-border bg-warn-bg">
 					<CardContent class="pt-5 text-sm text-warn-foreground" role="alert">{error}</CardContent>
 				</Card>
-			{:else if accounts.length === 0}
-				<p class="text-sm text-muted">Open an account first, then import a statement into it.</p>
+			{:else if activeAccounts.length === 0}
+				<p class="text-sm text-muted">
+					{accounts.length === 0
+						? 'Open an account first, then import a statement into it.'
+						: 'Unarchive an account first, then import a statement into it.'}
+				</p>
 			{:else}
 				<div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)] lg:items-start">
-					<UploadCard {accounts} {blockedAccountIds} onuploaded={uploaded} />
+					<UploadCard accounts={activeAccounts} {blockedAccountIds} onuploaded={uploaded} />
 					<div class="flex flex-col gap-6">
 						<ImportHistory {openImports} {pastImports} onreview={review} />
 					</div>

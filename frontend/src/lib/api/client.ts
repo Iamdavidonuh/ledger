@@ -99,6 +99,8 @@ export const api = {
 		list: () => get<AccountWithBalance[]>('/accounts'),
 		get: (id: string) => get<AccountWithBalance>(`/accounts/${id}`),
 		create: (req: CreateAccountRequest) => post<Account>('/accounts', req),
+		archive: (id: string) => post<Account>(`/accounts/${id}/archive`),
+		unarchive: (id: string) => post<Account>(`/accounts/${id}/unarchive`),
 		updateCurrentValue: (id: string, req: UpdateValueRequest) =>
 			post<Valuation>(`/accounts/${id}/current-value`, req)
 	},

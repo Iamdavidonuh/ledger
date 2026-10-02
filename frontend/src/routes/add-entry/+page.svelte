@@ -26,6 +26,11 @@
 	let potId = $state('');
 	let showMore = $state(false);
 
+	// An archived account is done being used day to day: it stays visible
+	// everywhere its own history already exists (Entries, Stats), but
+	// never as a destination for something new.
+	const activeAccounts = $derived(accounts.filter((a) => !a.archived));
+
 	const fromAccount = $derived(accounts.find((a) => a.id === fromAccountId));
 	const toAccount = $derived(accounts.find((a) => a.id === toAccountId));
 	const isCrossCurrency = $derived(
@@ -33,15 +38,15 @@
 	);
 	const selectedAccount = $derived(accounts.find((a) => a.id === accountId));
 	const potsForAccount = $derived(pots.filter((p) => p.currency === selectedAccount?.currency));
-	const toAccountOptions = $derived(accounts.filter((a) => a.id !== fromAccountId));
+	const toAccountOptions = $derived(activeAccounts.filter((a) => a.id !== fromAccountId));
 
 	onMount(async () => {
 		try {
 			[accounts, pots] = await Promise.all([api.accounts.list(), api.pots.list()]);
-			if (accounts.length > 0) {
-				accountId = accounts[0].id;
-				fromAccountId = accounts[0].id;
-				toAccountId = accounts.find((a) => a.id !== accounts[0].id)?.id ?? '';
+			if (activeAccounts.length > 0) {
+				accountId = activeAccounts[0].id;
+				fromAccountId = activeAccounts[0].id;
+				toAccountId = activeAccounts.find((a) => a.id !== activeAccounts[0].id)?.id ?? '';
 			}
 		} catch (err) {
 			loadError = err instanceof ApiError ? err.message : 'Something went wrong loading your accounts.';
@@ -138,8 +143,10 @@
 					<p class="text-sm text-muted">Loading...</p>
 				{:else if loadError}
 					<p class="text-sm text-warn-foreground">{loadError}</p>
-				{:else if accounts.length === 0}
-					<p class="text-sm text-muted">Open an account first.</p>
+				{:else if activeAccounts.length === 0}
+					<p class="text-sm text-muted">
+						{accounts.length === 0 ? 'Open an account first.' : 'Unarchive an account first.'}
+					</p>
 				{:else}
 					<form id="add-entry-form" class="flex flex-col gap-4" onsubmit={submit}>
 				{#if !isTransfer}
@@ -177,7 +184,7 @@
 					<label class="flex flex-col gap-2">
 						<span class="text-xs font-semibold tracking-wide text-muted uppercase">Account</span>
 						<select class="rounded-xl border border-border bg-card p-3 text-sm" bind:value={accountId}>
-							{#each accounts as account (account.id)}
+							{#each activeAccounts as account (account.id)}
 								<option value={account.id}>{account.name} ({account.currency})</option>
 							{/each}
 						</select>
@@ -209,7 +216,7 @@
 					<label class="flex flex-col gap-2">
 						<span class="text-xs font-semibold tracking-wide text-muted uppercase">From account</span>
 						<select class="rounded-xl border border-border bg-card p-3 text-sm" bind:value={fromAccountId}>
-							{#each accounts as account (account.id)}
+							{#each activeAccounts as account (account.id)}
 								<option value={account.id}>{account.name} ({account.currency})</option>
 							{/each}
 						</select>

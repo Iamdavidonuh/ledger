@@ -3,8 +3,8 @@
 	import { api, ApiError, type Account, type AccountWithBalance } from '$lib/api';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Button } from '$lib/components/ui/button';
-	import { formatMoney } from '$lib/format';
 	import NewAccountForm from '$lib/components/accounts/new-account-form.svelte';
+	import AccountCard from '$lib/components/accounts/account-card.svelte';
 
 	let accounts = $state<AccountWithBalance[]>([]);
 	let loading = $state(true);
@@ -28,6 +28,10 @@
 	function addAccount(account: Account) {
 		creating = false;
 		accounts = [...accounts, { ...account, balance: account.opening_balance }];
+	}
+
+	function replaceAccount(updated: AccountWithBalance) {
+		accounts = accounts.map((account) => (account.id === updated.id ? updated : account));
 	}
 </script>
 
@@ -57,15 +61,7 @@
 		{:else}
 			<div class="flex flex-col gap-2.5 lg:grid lg:grid-cols-2 lg:gap-4 xl:grid-cols-3">
 				{#each accounts as account (account.id)}
-					<Card class={account.archived ? 'opacity-50' : ''}>
-						<CardContent class="flex items-center justify-between pt-5">
-							<div>
-								<div class="text-sm font-semibold">{account.name}</div>
-								<div class="text-xs text-muted capitalize">{account.kind} &middot; {account.currency}</div>
-							</div>
-							<div class="font-display text-base font-bold">{formatMoney(Number(account.balance), account.currency)}</div>
-						</CardContent>
-					</Card>
+					<AccountCard {account} onchanged={replaceAccount} />
 				{/each}
 			</div>
 		{/if}
