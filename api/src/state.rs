@@ -1,13 +1,9 @@
 use crate::error::AppError;
-use ledger_core::{Ledger, LedgerError, LedgerStore, PgStore};
+use ledger_core::{InMemoryStore, Ledger, LedgerError, LedgerStore, PgStore};
 use sqlx::PgPool;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-
-#[cfg(test)]
-use ledger_core::InMemoryStore;
-#[cfg(test)]
 use tokio::sync::Mutex;
 
 /// Shared interface implemented by both `AppState` (production, pool-backed)
@@ -58,22 +54,26 @@ impl WithLedger for AppState {
 }
 
 /// Test state: wraps an `InMemoryStore` behind a mutex. No database needed.
-#[cfg(test)]
+/// Used in unit tests via `app(TestState::new()).oneshot(request)`.
 #[derive(Clone)]
 pub struct TestState {
     pub ledger: Arc<Mutex<Ledger<InMemoryStore>>>,
 }
 
-#[cfg(test)]
-impl TestState {
-    pub fn new() -> Self {
+impl Default for TestState {
+    fn default() -> Self {
         TestState {
             ledger: Arc::new(Mutex::new(Ledger::new(InMemoryStore::default()))),
         }
     }
 }
 
-#[cfg(test)]
+impl TestState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl WithLedger for TestState {
     type Store = InMemoryStore;
 

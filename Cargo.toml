@@ -4,3 +4,16 @@ members = ["core", "api", "importer"]
 
 [workspace.package]
 version = "0.1.0"
+
+# release-please's "rust" strategy, configured at this repo's root ("."),
+# always tries to bump [package].version in the Cargo.toml at that path
+# too, in addition to every workspace member -- a pure [workspace]-only
+# manifest with no [package] table has no such field, and that update
+# throws (verified against release-please's own source, not guessed).
+# This package exists only so that update has somewhere to land; nothing
+# depends on it. publish = false since it's not a real crate to ship.
+[package]
+name = "ledger-workspace"
+version.workspace = true
+edition = "2021"
+publish = false
