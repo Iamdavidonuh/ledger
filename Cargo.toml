@@ -12,8 +12,16 @@ version = "0.1.0"
 # throws (verified against release-please's own source, not guessed).
 # This package exists only so that update has somewhere to land; nothing
 # depends on it. publish = false since it's not a real crate to ship.
+#
+# version is a literal string, not version.workspace = true: release-
+# please's updater does a direct TOML path replace expecting a plain
+# string at package.version, and a workspace-inherited reference there
+# is a table, not a string -- confirmed live, it fails the whole run
+# ("value at path package.version is not tagged") rather than silently
+# misbehaving. The two fields are independent now; keep them in sync by
+# hand on the rare occasion the workspace default actually needs to move.
 [package]
 name = "ledger-workspace"
-version.workspace = true
+version = "0.1.0"
 edition = "2021"
 publish = false
