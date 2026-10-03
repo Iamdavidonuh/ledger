@@ -4,7 +4,7 @@
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Progress } from '$lib/components/ui/progress';
 	import { formatMoney } from '$lib/format';
-	import { startOfCurrentMonth } from '$lib/dates';
+	import { parseLocalDate, startOfCurrentMonth } from '$lib/dates';
 	import { Button } from '$lib/components/ui/button';
 
 	let accounts = $state<AccountWithBalance[]>([]);
@@ -60,7 +60,7 @@
 				// income nor spending, just money changing accounts.
 				if (entry.voided_reason !== null) continue;
 				if (entry.transfer_account_id !== null) continue;
-				if (new Date(entry.date) < startOfMonth) continue;
+				if (parseLocalDate(entry.date) < startOfMonth) continue;
 				const amount = Number(entry.amount);
 				if (amount >= 0) {
 					inTotals[entry.currency] = (inTotals[entry.currency] ?? 0) + amount;

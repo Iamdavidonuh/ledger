@@ -25,6 +25,7 @@
 		busy = false,
 		onaccept,
 		ondiscard,
+		onsetcategory,
 		ontransfer
 	}: {
 		row: NormalQueueRow;
@@ -36,6 +37,7 @@
 		busy?: boolean;
 		onaccept: (category: string | undefined) => void;
 		ondiscard: () => void;
+		onsetcategory: (category: string | null) => void;
 		ontransfer: (request: AcceptAsTransferRequest) => void;
 	} = $props();
 
@@ -97,6 +99,9 @@
 			suggestion={row.suggested_category}
 			{categories}
 			disabled={busy}
+			onchange={(next) => {
+				if (next !== (row.category ?? '')) onsetcategory(next === '' ? null : next);
+			}}
 		/>
 
 		<div class="flex flex-wrap gap-3">

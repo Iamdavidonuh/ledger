@@ -127,15 +127,16 @@
 				class="flex flex-none items-center justify-between gap-3 px-5 pt-[18px] pb-2 lg:border-b lg:border-border lg:px-7 lg:py-5"
 			>
 				<div class="font-display text-[17px] font-bold lg:text-lg">Add entry</div>
-				<a
-					href="/"
+				<button
+					type="button"
+					onclick={() => history.back()}
 					aria-label="Close"
 					class="flex h-8 w-8 items-center justify-center rounded-full hover:bg-row-hover"
 				>
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
 						><path d="M6 6l12 12M18 6L6 18"></path></svg
 					>
-				</a>
+				</button>
 			</div>
 
 			<div class="flex-1 overflow-y-auto px-5 pb-6 lg:px-7 lg:pt-6 lg:pb-6">
@@ -321,7 +322,7 @@
 
 			{#if !loading && !loadError && accounts.length > 0}
 				<div class="hidden flex-none items-center justify-end gap-2.5 border-t border-border px-7 py-5 lg:flex">
-					<Button variant="outline" href="/">Cancel</Button>
+					<Button type="button" variant="outline" onclick={() => history.back()}>Cancel</Button>
 					<Button type="submit" form="add-entry-form" disabled={submitting}>
 						{submitting ? 'Saving...' : 'Save entry'}
 					</Button>

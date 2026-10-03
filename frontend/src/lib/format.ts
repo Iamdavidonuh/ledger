@@ -1,3 +1,5 @@
+import { parseLocalDate } from './dates';
+
 // Currency here can be any 2-10 letter/digit code (core/src/currency.rs
 // allows crypto-style codes), which Intl.NumberFormat doesn't always
 // recognize, so fall back to a plain number instead of throwing.
@@ -23,7 +25,7 @@ export function formatSignedMoney(amount: string, currency: string): string {
 // "2026-03-01" as "Mar 1". Parsed as a local date, not UTC, so the day never
 // shifts for someone west of Greenwich.
 export function formatDay(date: string): string {
-	const parsed = new Date(`${date}T00:00:00`);
+	const parsed = parseLocalDate(date);
 	if (Number.isNaN(parsed.getTime())) return date;
 	return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(parsed);
 }

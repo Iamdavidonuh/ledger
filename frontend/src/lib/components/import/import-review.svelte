@@ -309,7 +309,7 @@
 				{doneMessage ?? 'This import is finished.'} You can fix anything later from the Entries screen.
 			</p>
 			<div class="flex flex-wrap justify-center gap-3">
-				<Button href="/entries" class="max-lg:h-11">See entries</Button>
+				<Button href="/entries?account={account.id}" class="max-lg:h-11">See entries</Button>
 				<Button variant="outline" class="max-lg:h-11" onclick={onexit}>Back to imports</Button>
 			</div>
 		</Card>
@@ -423,6 +423,7 @@
 								busy={locked}
 								onaccept={(category) => accept(row, category)}
 								ondiscard={() => discard(row)}
+								onsetcategory={(category) => saveCategory(row, category)}
 								ontransfer={(request) => moveToAccount(row, request)}
 							/>
 						{/each}
