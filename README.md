@@ -19,3 +19,15 @@ only touching one only bumps that one. `.github/workflows/release.yml`
 builds and pushes to `ghcr.io/iamdavidonuh/ledger-api` and `ledger-frontend`
 only once a release-please PR for that package is actually merged, never on
 an ordinary push.
+
+A `Release-As: X.Y.Z` footer forces a specific version, bypassing the
+normal bump-type detection -- useful for bootstrapping a package's first
+release, since no commit can be a conventional "fix"/"feat" against a
+version that doesn't exist yet. **It is not path-scoped**: it overrides
+every configured package's next version, not just the one the commit
+actually touches (confirmed live -- a `Release-As: 0.0.1` meant only for
+`frontend/` kept silently resetting the already-released backend's next
+version to 0.0.1 too, across multiple release-please runs, until a newer
+`Release-As` on a later commit superseded it). Only ever use it on a
+commit by itself, immediately merged, never combined with unrelated
+changes to another package in the same push.
