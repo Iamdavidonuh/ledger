@@ -22,6 +22,6 @@ version = "0.1.0"
 # hand on the rare occasion the workspace default actually needs to move.
 [package]
 name = "ledger-workspace"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 publish = false
