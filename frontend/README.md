@@ -1,42 +1,38 @@
-# sv
+# ledger frontend
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
-
-## Creating a project
-
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
-
-```sh
-# recreate this project
-npx sv@0.17.1 create --template minimal --types ts --add tailwindcss="plugins:none" sveltekit-adapter="adapter:static" --no-download-check --install npm frontend
-```
+SvelteKit PWA for the ledger app: accounts, entries, pots, bank statement
+imports, and stats. Talks to the Rust API in `../api`.
 
 ## Developing
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
 ```sh
+npm install
 npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
 ```
 
-## Building
+The dev server proxies `/api/*` to `http://localhost:8080` (see
+`vite.config.ts`), so run the API locally alongside it.
 
-To create a production version of your app:
+## Building
 
 ```sh
 npm run build
 ```
 
-You can preview the production build with `npm run preview`.
+Static output (adapter-static), served in production by the
+`static-web-server` image built from `Dockerfile`. The deployed API's
+address is a runtime value, not baked into the build -- see
+`static/config.js` and `src/lib/api/client.ts`.
 
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+## Checking
+
+```sh
+npm run check
+```
+
+## Releases
+
+Same convention as the backend (see the repo root README): commit titles
+need a Conventional Commits prefix (`feat:`, `fix:`, `chore:`, etc.) for
+release-please to pick them up. This package releases independently from
+the backend -- a commit only touching `frontend/` only bumps this one.
