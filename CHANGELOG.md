@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.1](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.1.0...backend-v0.0.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* Docker build never copied the new root ledger-workspace crate's src/ ([099ed1f](https://github.com/Iamdavidonuh/ledger/commit/099ed1fd3b2640bc05942699647d8bacc6a61be5))
+
+
+### Documentation
+
+* **frontend:** replace the unedited sv-create scaffold README ([38b3e14](https://github.com/Iamdavidonuh/ledger/commit/38b3e14795d70bf8810001e302dc2d0dd1464952))
+
 ## [0.1.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.1.0...backend-v0.1.0) (2026-10-03)
 
 
