@@ -105,6 +105,7 @@ pub struct ImportResult {
 #[derive(serde::Serialize)]
 pub struct ImportSummary {
     pub id: ImportId,
+    pub account_id: AccountId,
     pub file_name: String,
     pub uploaded_at: DateTime<Utc>,
     pub rows_read: i64,
@@ -239,6 +240,7 @@ async fn list_imports<S: WithLedger>(
             .into_iter()
             .map(|i| ImportSummary {
                 id: i.id,
+                account_id: i.account_id,
                 file_name: i.file_name,
                 uploaded_at: i.uploaded_at,
                 rows_read: i.rows_read,

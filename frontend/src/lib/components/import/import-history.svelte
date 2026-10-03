@@ -58,7 +58,7 @@
 					<p class="truncate text-sm font-semibold">{summary.file_name}</p>
 					<p class="text-xs text-muted-2">{uploadedOn(summary)}, {summary.rows_read} rows</p>
 				</div>
-				<Button href="/entries" variant="ghost" size="sm">See entries</Button>
+				<Button href="/entries?account={summary.account_id}" variant="ghost" size="sm">See entries</Button>
 			</Card>
 		{/each}
 	{/if}

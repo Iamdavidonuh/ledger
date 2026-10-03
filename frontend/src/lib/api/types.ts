@@ -147,10 +147,12 @@ export interface Import {
 }
 
 // GET /imports returns this smaller shape, not the full Import -- the list
-// screen doesn't need account_id/currency/opening_balance/closing_balance,
-// so the API doesn't send them.
+// screen doesn't need currency/opening_balance/closing_balance, so the API
+// doesn't send them. account_id is kept, though: "See entries" after a
+// past import needs it to open Entries on the right account.
 export interface ImportSummary {
 	id: string;
+	account_id: string;
 	file_name: string;
 	uploaded_at: string;
 	rows_read: number;
