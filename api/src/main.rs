@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use ledger_api::app;
+use ledger_api::cors;
 use ledger_api::state::AppState;
 use sqlx::PgPool;
 
@@ -34,8 +35,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = PgPool::connect(&database_url).await?;
     sqlx::migrate!("../core/migrations").run(&pool).await?;
     let state = AppState::new(pool);
+
+    // Unset means no CORS layer. Applied here, so `app` does not read the
+    // environment.
+    let router = match cors::layer_from_env()? {
+        Some(layer) => app(state).layer(layer),
+        None => app(state),
+    };
+
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
-    axum::serve(listener, app(state)).await?;
+    axum::serve(listener, router).await?;
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod accounts;
+pub mod cors;
 mod entries;
 pub mod error;
 mod import_matching;
