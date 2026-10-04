@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.1.1...backend-v0.2.0) (2026-10-04)
+
+
+### Features
+
+* **api:** add LEDGER_CORS_ALLOWED_ORIGINS to allow cross-origin frontends, defaulting to no CORS headers ([3df88a8](https://github.com/Iamdavidonuh/ledger/commit/3df88a815458eeccd42917b4cae5dff0a086d3a4))
+
 ## [0.1.1](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.1.0...backend-v0.1.1) (2026-10-03)
 
 
