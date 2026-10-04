@@ -832,7 +832,7 @@ dependencies = [
 
 [[package]]
 name = "importer"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "csv",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "ledger-api"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "chrono",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "ledger-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -915,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "ledger-workspace"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "libc"
