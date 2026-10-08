@@ -1,10 +1,10 @@
 use crate::error::{AppError, AppJson};
 use crate::state::WithLedger;
 use axum::extract::{Path, Query, State};
-use axum::routing::{patch, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
-use ledger_core::{AccountId, Entry, EntryId, EntryMetadata, PotId};
+use ledger_core::{AccountId, Entry, EntryId, EntryMetadata, EntryPart, PotId};
 use rust_decimal::Decimal;
 
 #[derive(serde::Deserialize, Clone, Copy)]
@@ -66,6 +66,22 @@ pub struct VoidRequest {
     pub reason: String,
 }
 
+#[derive(serde::Deserialize)]
+pub struct SplitEntryRequest {
+    pub parts: Vec<SplitPart>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct SplitPart {
+    pub amount: Decimal,
+    pub category: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct MarkAsTransferRequest {
+    pub transfer_account_id: AccountId,
+}
+
 pub fn router<S: WithLedger>() -> Router<S> {
     Router::new()
         .route("/entries", post(record_entry::<S>).get(list_entries::<S>))
@@ -73,6 +89,9 @@ pub fn router<S: WithLedger>() -> Router<S> {
         .route("/entries/:id/amount", patch(edit_amount::<S>))
         .route("/entries/:id/void", post(void_entry::<S>))
         .route("/entries/:id/confirm", post(confirm_entry::<S>))
+        .route("/entries/:id/split", post(split_entry::<S>))
+        .route("/entries/:id/parts", get(get_entry_parts::<S>))
+        .route("/entries/:id/mark-as-transfer", post(mark_as_transfer::<S>))
 }
 
 async fn record_entry<S: WithLedger>(
@@ -169,6 +188,51 @@ async fn confirm_entry<S: WithLedger>(
 ) -> Result<Json<Entry>, AppError> {
     let entry = state
         .with_ledger(move |ledger| Box::pin(async move { ledger.confirm_entry(id).await }))
+        .await?;
+    Ok(Json(entry))
+}
+
+async fn split_entry<S: WithLedger>(
+    State(state): State<S>,
+    Path(id): Path<EntryId>,
+    AppJson(req): AppJson<SplitEntryRequest>,
+) -> Result<Json<Vec<EntryPart>>, AppError> {
+    let parts: Vec<(Decimal, Option<String>)> = req
+        .parts
+        .into_iter()
+        .map(|p| (p.amount, p.category))
+        .collect();
+    let entry_parts = state
+        .with_ledger(move |ledger| {
+            Box::pin(async move { ledger.split_entry(id, parts).await })
+        })
+        .await?;
+    Ok(Json(entry_parts))
+}
+
+async fn get_entry_parts<S: WithLedger>(
+    State(state): State<S>,
+    Path(id): Path<EntryId>,
+) -> Result<Json<Vec<EntryPart>>, AppError> {
+    let parts = state
+        .with_ledger(move |ledger| Box::pin(async move { ledger.parts_for_entry(id).await }))
+        .await?;
+    Ok(Json(parts))
+}
+
+async fn mark_as_transfer<S: WithLedger>(
+    State(state): State<S>,
+    Path(id): Path<EntryId>,
+    AppJson(req): AppJson<MarkAsTransferRequest>,
+) -> Result<Json<Entry>, AppError> {
+    let entry = state
+        .with_ledger(move |ledger| {
+            Box::pin(async move {
+                ledger
+                    .mark_entry_as_transfer(id, req.transfer_account_id)
+                    .await
+            })
+        })
         .await?;
     Ok(Json(entry))
 }
@@ -417,5 +481,187 @@ mod tests {
         assert!(cleared.tags.is_empty());
         assert_eq!(cleared.note, None);
         assert_eq!(cleared.pot_id, None);
+    }
+
+    #[tokio::test]
+    async fn splitting_an_entry_into_parts_stores_them_and_they_can_be_retrieved() {
+        let state = test_state();
+        let account_id = an_account(&state).await;
+        let response = post_json(
+            state.clone(),
+            "/entries",
+            serde_json::json!({"account_id": account_id, "date": "2026-01-15", "kind": "expense", "amount": "100", "description": "Groceries"}),
+        )
+        .await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: Entry = serde_json::from_slice(&body).unwrap();
+
+        let response = post_json(
+            state.clone(),
+            &format!("/entries/{}/split", entry.id),
+            serde_json::json!({"parts": [
+                {"amount": "-60", "category": "Food"},
+                {"amount": "-40", "category": "Household"}
+            ]}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let parts: Vec<EntryPart> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].amount, rust_decimal_macros::dec!(-60));
+        assert_eq!(parts[0].category, Some("Food".to_string()));
+        assert_eq!(parts[1].amount, rust_decimal_macros::dec!(-40));
+        assert_eq!(parts[1].category, Some("Household".to_string()));
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/entries/{}/parts", entry.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let retrieved: Vec<EntryPart> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(retrieved, parts);
+    }
+
+    #[tokio::test]
+    async fn splitting_a_voided_entry_is_unprocessable() {
+        let state = test_state();
+        let account_id = an_account(&state).await;
+        let response = post_json(
+            state.clone(),
+            "/entries",
+            serde_json::json!({"account_id": account_id, "date": "2026-01-15", "kind": "expense", "amount": "100", "description": "x"}),
+        )
+        .await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: Entry = serde_json::from_slice(&body).unwrap();
+
+        post_json(
+            state.clone(),
+            &format!("/entries/{}/void", entry.id),
+            serde_json::json!({"reason": "test"}),
+        )
+        .await;
+
+        let response = post_json(
+            state,
+            &format!("/entries/{}/split", entry.id),
+            serde_json::json!({"parts": [{"amount": "-100", "category": null}]}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn splitting_with_parts_that_dont_sum_to_entry_amount_is_unprocessable() {
+        let state = test_state();
+        let account_id = an_account(&state).await;
+        let response = post_json(
+            state.clone(),
+            "/entries",
+            serde_json::json!({"account_id": account_id, "date": "2026-01-15", "kind": "expense", "amount": "100", "description": "x"}),
+        )
+        .await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: Entry = serde_json::from_slice(&body).unwrap();
+
+        let response = post_json(
+            state,
+            &format!("/entries/{}/split", entry.id),
+            serde_json::json!({"parts": [
+                {"amount": "-60", "category": null},
+                {"amount": "-30", "category": null}
+            ]}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn marking_an_entry_as_transfer_links_it_to_another_account() {
+        let state = test_state();
+        let checking = an_account(&state).await;
+        let savings = an_account(&state).await;
+        
+        let response = post_json(
+            state.clone(),
+            "/entries",
+            serde_json::json!({"account_id": checking, "date": "2026-01-15", "kind": "expense", "amount": "100", "description": "Transfer to savings"}),
+        )
+        .await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: Entry = serde_json::from_slice(&body).unwrap();
+        assert_eq!(entry.transfer_account_id, None);
+
+        let response = post_json(
+            state,
+            &format!("/entries/{}/mark-as-transfer", entry.id),
+            serde_json::json!({"transfer_account_id": savings}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let updated: Entry = serde_json::from_slice(&body).unwrap();
+        assert_eq!(updated.transfer_account_id, Some(savings));
+    }
+
+    #[tokio::test]
+    async fn marking_a_voided_entry_as_transfer_is_unprocessable() {
+        let state = test_state();
+        let checking = an_account(&state).await;
+        let savings = an_account(&state).await;
+        
+        let response = post_json(
+            state.clone(),
+            "/entries",
+            serde_json::json!({"account_id": checking, "date": "2026-01-15", "kind": "expense", "amount": "100", "description": "x"}),
+        )
+        .await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: Entry = serde_json::from_slice(&body).unwrap();
+
+        post_json(
+            state.clone(),
+            &format!("/entries/{}/void", entry.id),
+            serde_json::json!({"reason": "mistake"}),
+        )
+        .await;
+
+        let response = post_json(
+            state,
+            &format!("/entries/{}/mark-as-transfer", entry.id),
+            serde_json::json!({"transfer_account_id": savings}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn marking_entry_as_transfer_to_same_account_is_unprocessable() {
+        let state = test_state();
+        let account = an_account(&state).await;
+        
+        let response = post_json(
+            state.clone(),
+            "/entries",
+            serde_json::json!({"account_id": account, "date": "2026-01-15", "kind": "expense", "amount": "100", "description": "x"}),
+        )
+        .await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let entry: Entry = serde_json::from_slice(&body).unwrap();
+
+        let response = post_json(
+            state,
+            &format!("/entries/{}/mark-as-transfer", entry.id),
+            serde_json::json!({"transfer_account_id": account}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

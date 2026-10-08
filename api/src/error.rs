@@ -98,6 +98,19 @@ impl IntoResponse for AppError {
                 | LedgerError::NoSuggestedMatch
                 | LedgerError::WrongQueueRowKind),
             ) => (StatusCode::CONFLICT, json!({ "error": e.to_string() })),
+            AppError::Ledger(
+                e @ LedgerError::BalanceReconciliationFailed {
+                    statement_balance,
+                    ledger_balance,
+                },
+            ) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({
+                    "error": e.to_string(),
+                    "statement_balance": statement_balance,
+                    "ledger_balance": ledger_balance,
+                }),
+            ),
             AppError::Ledger(e) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 json!({ "error": e.to_string() }),
@@ -197,6 +210,19 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(body["expected"], "90.00");
         assert_eq!(body["actual"], "88.00");
+        assert!(body["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn a_failed_balance_reconciliation_carries_both_figures_as_fields() {
+        let (status, body) = respond(AppError::from(LedgerError::BalanceReconciliationFailed {
+            statement_balance: dec!(200.00),
+            ledger_balance: dec!(150.00),
+        }))
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["statement_balance"], "200.00");
+        assert_eq!(body["ledger_balance"], "150.00");
         assert!(body["error"].is_string());
     }
 }

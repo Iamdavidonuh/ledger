@@ -42,8 +42,8 @@ fn an_import(account: &Account) -> Import {
         file_name: "statement.csv".to_string(),
         uploaded_at: Utc::now(),
         rows_read: 0,
-        opening_balance: dec!(0),
-        closing_balance: dec!(0),
+        opening_balance: account.opening_balance,
+        closing_balance: account.opening_balance,
         completed: false,
     }
 }
@@ -121,7 +121,10 @@ async fn stage<S: LedgerStore>(
     account: &Account,
     build: impl FnOnce(&Import) -> (Vec<ImportQueueRow>, Vec<ImportQueueRowMatch>),
 ) -> (Import, Vec<ImportQueueRow>) {
-    let import = an_import(account);
+    let current_balance = ledger.account_balance(account.id).await.unwrap();
+    let mut import = an_import(account);
+    import.opening_balance = current_balance;
+    import.closing_balance = current_balance;
     let (rows, matches) = build(&import);
     ledger
         .stage_import(import.clone(), rows.clone(), matches)
@@ -286,6 +289,51 @@ async fn staging_succeeds_when_the_accounts_only_import_is_completed() {
 }
 
 #[tokio::test]
+async fn staging_with_matching_opening_balance_succeeds() {
+    let (mut ledger, account) = setup().await;
+    ledger
+        .record_manual_entry(account.id, day(1), dec!(50), "Salary")
+        .await
+        .unwrap();
+    let balance = ledger.account_balance(account.id).await.unwrap();
+    assert_eq!(balance, dec!(150)); // opening 100 + 50
+    
+    let mut import = an_import(&account);
+    import.opening_balance = dec!(150);
+    ledger
+        .stage_import(import.clone(), vec![], vec![])
+        .await
+        .unwrap();
+    assert!(ledger.import(import.id).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn staging_with_mismatched_opening_balance_is_refused() {
+    let (mut ledger, account) = setup().await;
+    ledger
+        .record_manual_entry(account.id, day(1), dec!(50), "Salary")
+        .await
+        .unwrap();
+    let balance = ledger.account_balance(account.id).await.unwrap();
+    assert_eq!(balance, dec!(150));
+    
+    let mut import = an_import(&account);
+    import.opening_balance = dec!(200); // Wrong balance
+    let result = ledger
+        .stage_import(import.clone(), vec![], vec![])
+        .await;
+    
+    assert_eq!(
+        result,
+        Err(LedgerError::BalanceReconciliationFailed {
+            statement_balance: dec!(200),
+            ledger_balance: dec!(150),
+        })
+    );
+    assert_eq!(ledger.import(import.id).await, Ok(None));
+}
+
+#[tokio::test]
 async fn a_failed_stage_writes_nothing_at_all() {
     // Stage a first import so the account already has one incomplete.
     // Then attempt to stage a second: the pre-check fires before any
@@ -435,6 +483,101 @@ async fn accepting_a_row_saves_it_as_a_locked_imported_entry_and_removes_it() {
         ledger.edit_manual_entry_amount(entry.id, dec!(-1)).await,
         Err(LedgerError::EntryLocked)
     );
+}
+
+    #[tokio::test]
+async fn merging_a_queue_row_into_entry_upgrades_it_to_imported() {
+    let (mut ledger, account) = setup().await;
+    let manual = ledger
+        .record_manual_entry(account.id, day(3), dec!(-10), "Cinema")
+        .await
+        .unwrap();
+    ledger
+        .update_entry_metadata(
+            manual.id,
+            EntryMetadata {
+                category: Some("Fun".to_string()),
+                tags: vec!["weekend".to_string()],
+                note: Some("with friends".to_string()),
+                pot_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    
+    let (import, rows) = stage(&mut ledger, &account, |i| {
+        let row = normal(i, day(3), at(23, 15), dec!(-9.99), "Cinema, popcorn");
+        (vec![row], vec![])
+    })
+    .await;
+    
+    let merged = ledger
+        .merge_queue_row_into_entry(import.id, rows[0].id, manual.id)
+        .await
+        .unwrap();
+    
+    // Bank data replaces manual data
+    assert_eq!(merged.id, manual.id);
+    assert_eq!(merged.date, day(3));
+    assert_eq!(merged.time, at(23, 15));
+    assert_eq!(merged.amount, dec!(-9.99));
+    assert_eq!(merged.description, "Cinema, popcorn");
+    assert_eq!(merged.source, EntrySource::Imported);
+    assert_eq!(merged.bank_state, BankState::Completed);
+    
+    // Metadata preserved
+    assert_eq!(merged.category, Some("Fun".to_string()));
+    assert_eq!(merged.tags, vec!["weekend".to_string()]);
+    assert_eq!(merged.note, Some("with friends".to_string()));
+    
+    // Row removed from queue
+    assert_eq!(ledger.store.get_queue_row(rows[0].id).await, Ok(None));
+}
+
+#[tokio::test]
+async fn merging_into_voided_entry_is_refused() {
+    let (mut ledger, account) = setup().await;
+    let manual = ledger
+        .record_manual_entry(account.id, day(3), dec!(-10), "Cinema")
+        .await
+        .unwrap();
+    ledger.void_entry(manual.id, "mistake").await.unwrap();
+    
+    let (import, rows) = stage(&mut ledger, &account, |i| {
+        let row = normal(i, day(3), at(23, 15), dec!(-9.99), "Cinema");
+        (vec![row], vec![])
+    })
+    .await;
+    
+    let result = ledger
+        .merge_queue_row_into_entry(import.id, rows[0].id, manual.id)
+        .await;
+    assert_eq!(result, Err(LedgerError::AlreadyVoided));
+}
+
+#[tokio::test]
+async fn merging_into_entry_from_different_account_is_refused() {
+    let (mut ledger, account1) = setup().await;
+    let account2 = ledger
+        .open_account("Other", eur(), AccountKind::Own, dec!(100))
+        .await
+        .unwrap();
+    
+    let manual = ledger
+        .record_manual_entry(account2.id, day(3), dec!(-10), "Cinema")
+        .await
+        .unwrap();
+    
+    let (import, rows) = stage(&mut ledger, &account1, |i| {
+        let row = normal(i, day(3), at(23, 15), dec!(-9.99), "Cinema");
+        (vec![row], vec![])
+    })
+    .await;
+    
+    let result = ledger
+        .merge_queue_row_into_entry(import.id, rows[0].id, manual.id)
+        .await;
+    assert_eq!(result, Err(LedgerError::AccountNotFound(account2.id)));
 }
 
 #[tokio::test]

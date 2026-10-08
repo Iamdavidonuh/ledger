@@ -13,7 +13,8 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use importer::{BankA, BankB, ImportError, Importer, ParseResult};
 use ledger_core::{
-    AccountId, Entry, Import, ImportId, ImportQueueRow, LedgerError, QueueRowId, QueueRowView,
+    AccountId, Entry, EntryId, Import, ImportId, ImportQueueRow, LedgerError, QueueRowId,
+    QueueRowView,
 };
 use rust_decimal::Decimal;
 use std::str::FromStr;
@@ -128,6 +129,11 @@ pub struct SetCategoryRequest {
     pub category: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct MergeIntoEntryRequest {
+    pub entry_id: EntryId,
+}
+
 #[derive(serde::Serialize)]
 pub struct TransferResult {
     pub out_entry: Entry,
@@ -164,6 +170,10 @@ pub fn router<S: WithLedger>() -> Router<S> {
         .route(
             "/imports/:id/queue/:row_id/accept-as-transfer",
             post(accept_as_transfer::<S>),
+        )
+        .route(
+            "/imports/:id/queue/:row_id/merge-into-entry",
+            post(merge_into_entry::<S>),
         )
         .route(
             "/imports/:id/queue/:row_id/resolve-revert",
@@ -345,6 +355,24 @@ async fn accept_as_transfer<S: WithLedger>(
     }))
 }
 
+async fn merge_into_entry<S: WithLedger>(
+    State(state): State<S>,
+    Path((id, row_id)): Path<(ImportId, QueueRowId)>,
+    AppJson(req): AppJson<MergeIntoEntryRequest>,
+) -> Result<Json<Entry>, AppError> {
+    Ok(Json(
+        state
+            .with_ledger(move |ledger| {
+                Box::pin(async move {
+                    ledger
+                        .merge_queue_row_into_entry(id, row_id, req.entry_id)
+                        .await
+                })
+            })
+            .await?,
+    ))
+}
+
 async fn resolve_revert<S: WithLedger>(
     State(state): State<S>,
     Path((id, row_id)): Path<(ImportId, QueueRowId)>,
@@ -397,8 +425,8 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
     use ledger_core::{
-        AccountKind, BankState, Currency, Entry, EntryId, Import, ImportQueueRow, QueueRowView,
-        RowReview,
+        AccountKind, BankState, Currency, Entry, EntryId, EntrySource, Import, ImportQueueRow,
+        QueueRowView, RowReview,
     };
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
@@ -406,6 +434,10 @@ mod tests {
 
     fn test_state() -> crate::state::TestState {
         crate::state::TestState::new()
+    }
+
+    fn day(d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(2026, 3, d).unwrap()
     }
 
     fn fixture(name: &str) -> Vec<u8> {
@@ -695,7 +727,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_upload_while_one_is_incomplete_is_409_and_allowed_once_it_completes() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0)).await;
+        let account = an_account(&state, "EUR", dec!(150)).await;
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         let (status, _) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(status, StatusCode::CONFLICT);
@@ -751,15 +783,20 @@ mod tests {
 
     /// An entry with a time, which only an import produces: stages a
     /// one-row statement and accepts it, as an earlier upload would have.
+    /// The statement is built to have opening balance = current ledger balance,
+    /// so it passes balance reconciliation.
     async fn an_earlier_imported_entry(
         state: &TestState,
         account: AccountId,
         started: &str,
         amount: &str,
     ) -> Entry {
+        let opening = balance(state, account).await;
+        let amount_dec: Decimal = amount.parse().unwrap();
+        let closing = opening + amount_dec;
         let csv = format!(
             "Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance\n\
-             Card Payment,Current,{started},{started},Corner Bakery,{amount},0.00,EUR,COMPLETED,{amount}\n"
+             Card Payment,Current,{started},{started},Corner Bakery,{amount},0.00,EUR,COMPLETED,{closing}\n"
         );
         let (status, body) = send(
             state,
@@ -788,9 +825,11 @@ mod tests {
     #[tokio::test]
     async fn a_reverted_row_matching_a_timed_entry_is_suggested_not_applied() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0)).await;
+        // Account starts at 150 + 4.20 to compensate for the earlier import
+        let account = an_account(&state, "EUR", dec!(154.20)).await;
         let earlier =
             an_earlier_imported_entry(&state, account, "2026-03-04 12:00:00", "-4.20").await;
+        // Now balance is 150, matching bank_a_statement.csv opening balance
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         let rows = queue(&state, &import_id(&body)).await;
         let candidate = the_reverted_candidate(&rows);
@@ -802,8 +841,10 @@ mod tests {
     #[tokio::test]
     async fn a_reverted_row_against_an_untimed_or_absent_entry_is_queued_with_no_suggestion() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0)).await;
+        // Account starts at 150 + 4.20 to compensate for the manual entry we'll add
+        let account = an_account(&state, "EUR", dec!(154.20)).await;
         an_untimed_entry(&state, account, 4, dec!(-4.20)).await;
+        // Now balance is 150, matching statement opening balance
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(body["reverted_candidate_count"], 1);
         let rows = queue(&state, &import_id(&body)).await;
@@ -828,8 +869,10 @@ mod tests {
     #[tokio::test]
     async fn a_row_resembling_an_existing_entry_is_flagged_suspicious() {
         let state = test_state();
-        let account = an_account(&state, "EUR", dec!(0)).await;
+        // Account starts at 150 - 200 to compensate for the manual entry we'll add
+        let account = an_account(&state, "EUR", dec!(-50)).await;
         let earlier = an_untimed_entry(&state, account, 6, dec!(200.00)).await;
+        // Now balance is 150, matching statement opening balance
         let (_, body) = upload(&state, account, "BankA", "bank_a_statement.csv").await;
         assert_eq!(body["suspicious_count"], 1);
         let rows = queue(&state, &import_id(&body)).await;
@@ -991,6 +1034,68 @@ mod tests {
         )
         .await;
         assert_eq!(entry["category"], "Food");
+    }
+
+    #[tokio::test]
+    async fn merging_a_queue_row_into_entry_upgrades_it_to_imported() {
+        let state = test_state();
+        let (account, id, rows) = staged_bank_a(&state).await;
+        
+        let manual = {
+            let mut ledger = state.ledger.lock().await;
+            ledger
+                .record_manual_entry(account, day(1), dec!(-9), "Night Kiosk")
+                .await
+                .unwrap()
+        };
+        
+        let row = row_described(&rows, "Night Kiosk");
+        let (status, entry) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{}/merge-into-entry", row.row.id),
+                serde_json::json!({"entry_id": manual.id}),
+            ),
+        )
+        .await;
+        
+        assert_eq!(status, StatusCode::OK);
+        let entry: Entry = serde_json::from_value(entry).unwrap();
+        assert_eq!(entry.id, manual.id);
+        assert_eq!(entry.source, EntrySource::Imported);
+        assert_eq!(entry.description, "Night Kiosk");
+        assert_eq!(entry.amount, dec!(-10.00));
+        assert_eq!(queue(&state, &id).await.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn merging_into_voided_entry_is_unprocessable() {
+        let state = test_state();
+        let (account, id, rows) = staged_bank_a(&state).await;
+        
+        let manual = {
+            let mut ledger = state.ledger.lock().await;
+            let entry = ledger
+                .record_manual_entry(account, day(1), dec!(-10), "Night Kiosk")
+                .await
+                .unwrap();
+            ledger.void_entry(entry.id, "mistake").await.unwrap();
+            entry
+        };
+        
+        let row = row_described(&rows, "Night Kiosk");
+        let (status, _) = send(
+            &state,
+            json_request(
+                "POST",
+                &format!("/imports/{id}/queue/{}/merge-into-entry", row.row.id),
+                serde_json::json!({"entry_id": manual.id}),
+            ),
+        )
+        .await;
+        
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

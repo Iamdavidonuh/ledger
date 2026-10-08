@@ -187,6 +187,8 @@ impl<S: LedgerStore> Ledger<S> {
     /// Saves an already-built import, its queue rows and their match rows
     /// in one transaction. Re-checks for an incomplete import first, since
     /// parsing happens between the upload handler's own check and this call.
+    /// Also validates that the statement's opening balance matches the
+    /// ledger's current account balance.
     pub async fn stage_import(
         &mut self,
         import: Import,
@@ -201,6 +203,17 @@ impl<S: LedgerStore> Ledger<S> {
         {
             return Err(LedgerError::IncompleteImportExists);
         }
+        
+        // Validate that the statement's opening balance matches the ledger's
+        // current balance. This catches stale re-uploads and wrong-account uploads.
+        let ledger_balance = self.account_balance(import.account_id).await?;
+        if import.opening_balance != ledger_balance {
+            return Err(LedgerError::BalanceReconciliationFailed {
+                statement_balance: import.opening_balance,
+                ledger_balance,
+            });
+        }
+        
         self.store.begin().await?;
         let result = async {
             self.store.save_import(import).await?;
@@ -244,6 +257,61 @@ impl<S: LedgerStore> Ledger<S> {
         let removal = self
             .plan_removal(&import, row_id, Removal::Accepted { entry_id: entry.id })
             .await?;
+        self.store.begin().await?;
+        let result = async {
+            self.store.save_entry(entry.clone()).await?;
+            removal.apply(&mut self.store).await
+        }
+        .await;
+        match result {
+            Ok(()) => self.store.commit().await?,
+            Err(e) => {
+                self.store.rollback().await?;
+                return Err(e);
+            }
+        }
+        Ok(entry)
+    }
+
+    /// Merges a queue row into an existing manual entry, upgrading it to
+    /// imported. The bank's description, time, amount and state replace the
+    /// manual entry's values, while the entry's metadata (category, tags,
+    /// note, pot_id) and ID are preserved.
+    pub async fn merge_queue_row_into_entry(
+        &mut self,
+        import_id: ImportId,
+        row_id: QueueRowId,
+        entry_id: EntryId,
+    ) -> Result<Entry, LedgerError> {
+        let (import, row, detail) = self.find_normal_row(import_id, row_id).await?;
+        let mut entry = self
+            .store
+            .get_entry(entry_id)
+            .await?
+            .ok_or(LedgerError::EntryNotFound(entry_id))?;
+        
+        // Validate the entry belongs to the same account as the import
+        if entry.account_id != import.account_id {
+            return Err(LedgerError::AccountNotFound(entry.account_id));
+        }
+        
+        // Validate the entry is not voided
+        if entry.is_voided() {
+            return Err(LedgerError::AlreadyVoided);
+        }
+        
+        // Update entry with bank data, preserving metadata
+        entry.date = row.date;
+        entry.time = row.time;
+        entry.amount = row.amount;
+        entry.description = detail.description;
+        entry.source = EntrySource::Imported;
+        entry.bank_state = detail.bank_state;
+        
+        let removal = self
+            .plan_removal(&import, row_id, Removal::Accepted { entry_id })
+            .await?;
+        
         self.store.begin().await?;
         let result = async {
             self.store.save_entry(entry.clone()).await?;

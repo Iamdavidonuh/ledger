@@ -44,6 +44,11 @@ pub enum LedgerError {
     ImportNotFound(ImportId),
     #[error("queue row {0} not found")]
     QueueRowNotFound(QueueRowId),
+    #[error("the statement's opening balance ({statement_balance}) does not match the ledger's current balance ({ledger_balance})")]
+    BalanceReconciliationFailed {
+        statement_balance: rust_decimal::Decimal,
+        ledger_balance: rust_decimal::Decimal,
+    },
     #[error("storage error: {0}")]
     Storage(String),
 }

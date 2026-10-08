@@ -451,6 +451,39 @@ impl<S: LedgerStore> Ledger<S> {
         Ok((out_entry, in_entry))
     }
 
+    /// Marks an existing entry as being the counterpart to a transfer,
+    /// linking it to another account. This allows two independently-created
+    /// entries (e.g., one manual, one imported) to be retrospectively linked
+    /// as a transfer.
+    pub async fn mark_entry_as_transfer(
+        &mut self,
+        entry_id: EntryId,
+        transfer_account_id: AccountId,
+    ) -> Result<Entry, LedgerError> {
+        let mut entry = self
+            .store
+            .get_entry(entry_id)
+            .await?
+            .ok_or(LedgerError::EntryNotFound(entry_id))?;
+        
+        if entry.is_voided() {
+            return Err(LedgerError::AlreadyVoided);
+        }
+        
+        // Validate transfer account exists and is not the same account
+        if entry.account_id == transfer_account_id {
+            return Err(LedgerError::TransferToSelfNotAllowed);
+        }
+        self.store
+            .get_account(transfer_account_id)
+            .await?
+            .ok_or(LedgerError::AccountNotFound(transfer_account_id))?;
+        
+        entry.transfer_account_id = Some(transfer_account_id);
+        self.store.save_entry(entry.clone()).await?;
+        Ok(entry)
+    }
+
     /// Both amounts must be positive, and they differ exactly when the two
     /// accounts' currencies do.
     fn validate_transfer_amounts(
@@ -569,6 +602,10 @@ mod tests {
 
     fn a_date() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 1, 15).unwrap()
+    }
+
+    fn day(d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 1, d).unwrap()
     }
 
     fn tagged_to(pot: &Pot) -> EntryMetadata {
@@ -1612,6 +1649,91 @@ mod tests {
             .await;
         assert_eq!(result, Err(LedgerError::TransferToSelfNotAllowed));
         assert!(ledger.entries(a.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn marking_an_entry_as_transfer_links_it_to_another_account() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let checking = ledger
+            .open_account("Checking", eur.clone(), AccountKind::Own, dec!(500))
+            .await
+            .unwrap();
+        let savings = ledger
+            .open_account("Savings", eur, AccountKind::Own, dec!(0))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(checking.id, day(1), dec!(-100), "Move to savings")
+            .await
+            .unwrap();
+        assert_eq!(entry.transfer_account_id, None);
+
+        let updated = ledger
+            .mark_entry_as_transfer(entry.id, savings.id)
+            .await
+            .unwrap();
+        assert_eq!(updated.transfer_account_id, Some(savings.id));
+        
+        let retrieved = ledger.store.get_entry(entry.id).await.unwrap().unwrap();
+        assert_eq!(retrieved.transfer_account_id, Some(savings.id));
+    }
+
+    #[tokio::test]
+    async fn marking_a_voided_entry_as_transfer_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let a = ledger
+            .open_account("A", eur.clone(), AccountKind::Own, dec!(100))
+            .await
+            .unwrap();
+        let b = ledger
+            .open_account("B", eur, AccountKind::Own, dec!(0))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(a.id, day(1), dec!(-50), "test")
+            .await
+            .unwrap();
+        ledger.void_entry(entry.id, "mistake").await.unwrap();
+        
+        let result = ledger.mark_entry_as_transfer(entry.id, b.id).await;
+        assert_eq!(result, Err(LedgerError::AlreadyVoided));
+    }
+
+    #[tokio::test]
+    async fn marking_entry_as_transfer_to_same_account_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let a = ledger
+            .open_account("A", eur, AccountKind::Own, dec!(100))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(a.id, day(1), dec!(-50), "test")
+            .await
+            .unwrap();
+        
+        let result = ledger.mark_entry_as_transfer(entry.id, a.id).await;
+        assert_eq!(result, Err(LedgerError::TransferToSelfNotAllowed));
+    }
+
+    #[tokio::test]
+    async fn marking_entry_as_transfer_to_unknown_account_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let a = ledger
+            .open_account("A", eur, AccountKind::Own, dec!(100))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(a.id, day(1), dec!(-50), "test")
+            .await
+            .unwrap();
+        let unknown = AccountId::generate();
+        
+        let result = ledger.mark_entry_as_transfer(entry.id, unknown).await;
+        assert_eq!(result, Err(LedgerError::AccountNotFound(unknown)));
     }
 
     #[tokio::test]
