@@ -1,6 +1,6 @@
 use crate::error::{AppError, AppJson};
-use crate::state::WithLedger;
-use axum::extract::{Path, State};
+use crate::state::{WithLedger, WithRates};
+use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ledger_core::{Account, AccountId, AccountKind, Currency, LedgerError};
@@ -21,7 +21,7 @@ pub struct AccountWithBalance {
     pub balance: Decimal,
 }
 
-pub fn router<S: WithLedger>() -> Router<S> {
+pub fn router<S: WithLedger + WithRates>() -> Router<S> {
     Router::new()
         .route(
             "/accounts",
@@ -30,6 +30,7 @@ pub fn router<S: WithLedger>() -> Router<S> {
         .route("/accounts/:id", get(get_account::<S>))
         .route("/accounts/:id/archive", post(archive_account::<S>))
         .route("/accounts/:id/unarchive", post(unarchive_account::<S>))
+        .route("/accounts/:id/value-in", get(account_value_in::<S>))
 }
 
 async fn create_account<S: WithLedger>(
@@ -108,6 +109,35 @@ async fn unarchive_account<S: WithLedger>(
         })
         .await?;
     Ok(Json(account))
+}
+
+#[derive(serde::Deserialize)]
+struct ValueInQuery {
+    currency: String,
+}
+
+#[derive(serde::Serialize)]
+struct ValueInResponse {
+    value: String,
+    currency: String,
+}
+
+async fn account_value_in<S: WithLedger + WithRates>(
+    State(state): State<S>,
+    Path(id): Path<AccountId>,
+    Query(query): Query<ValueInQuery>,
+) -> Result<Json<ValueInResponse>, AppError> {
+    let target_currency = Currency::new(&query.currency)
+        .map_err(|e| AppError::BadRequest(format!("Invalid currency: {}", e)))?;
+
+    let value = state
+        .account_value_in(id, &target_currency)
+        .await?;
+
+    Ok(Json(ValueInResponse {
+        value: value.to_string(),
+        currency: target_currency.code().to_string(),
+    }))
 }
 
 #[cfg(test)]

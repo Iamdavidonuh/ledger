@@ -9,6 +9,7 @@ pub mod import;
 pub mod ledger;
 pub mod pg_store;
 pub mod pot;
+pub mod rate;
 pub mod store;
 pub mod transfer;
 pub mod valuation;
@@ -28,6 +29,9 @@ pub use import::{
 pub use ledger::Ledger;
 pub use pg_store::PgStore;
 pub use pot::{Allocation, Pot};
+pub use rate::{
+    CachedRate, CoinGeckoClient, ExchangeRate, FrankfurterClient, InMemoryRateCache, RateFetcher,
+};
 pub use store::{InMemoryStore, LedgerStore};
 pub use transfer::{Transfer, TransferLeg};
 pub use valuation::Valuation;

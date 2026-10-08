@@ -49,6 +49,10 @@ pub enum LedgerError {
         statement_balance: rust_decimal::Decimal,
         ledger_balance: rust_decimal::Decimal,
     },
+    #[error("failed to fetch exchange rate: {0}")]
+    ExchangeRateFetchFailed(String),
+    #[error("unsupported currency conversion: {from} to {to}")]
+    UnsupportedConversion { from: String, to: String },
     #[error("storage error: {0}")]
     Storage(String),
 }

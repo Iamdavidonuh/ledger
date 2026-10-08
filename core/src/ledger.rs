@@ -14,11 +14,31 @@ mod imports;
 
 pub struct Ledger<S: LedgerStore> {
     store: S,
+    pub rate_cache: Option<std::sync::Arc<crate::rate::InMemoryRateCache>>,
+    pub rate_fetcher: Option<std::sync::Arc<crate::rate::RateFetcher>>,
+    pub rate_ttl_hours: u64,
 }
 
 impl<S: LedgerStore> Ledger<S> {
     pub fn new(store: S) -> Self {
-        Ledger { store }
+        Ledger {
+            store,
+            rate_cache: None,
+            rate_fetcher: None,
+            rate_ttl_hours: 6,
+        }
+    }
+
+    pub fn with_rates(
+        mut self,
+        cache: std::sync::Arc<crate::rate::InMemoryRateCache>,
+        fetcher: std::sync::Arc<crate::rate::RateFetcher>,
+        ttl_hours: u64,
+    ) -> Self {
+        self.rate_cache = Some(cache);
+        self.rate_fetcher = Some(fetcher);
+        self.rate_ttl_hours = ttl_hours;
+        self
     }
 
     pub async fn open_account(
@@ -590,6 +610,76 @@ impl<S: LedgerStore> Ledger<S> {
             }
         }
         Ok(valuation)
+    }
+
+    pub async fn get_exchange_rate(
+        &self,
+        from: &Currency,
+        to: &Currency,
+    ) -> Result<crate::ExchangeRate, LedgerError> {
+        let cache = self.rate_cache.as_ref().ok_or_else(|| {
+            LedgerError::Storage("Rate cache not initialized".to_string())
+        })?;
+        let fetcher = self.rate_fetcher.as_ref().ok_or_else(|| {
+            LedgerError::Storage("Rate fetcher not initialized".to_string())
+        })?;
+
+        // Check cache first
+        if let Some(cached) = cache.get(from, to).await {
+            if !cached.is_expired() {
+                return Ok(crate::ExchangeRate {
+                    from: from.clone(),
+                    to: to.clone(),
+                    rate: cached.rate,
+                    fetched_at: cached.fetched_at,
+                });
+            }
+        }
+
+        // Fetch fresh rate
+        let rate = fetcher.fetch(from, to).await?;
+        cache.set(from, to, rate, self.rate_ttl_hours).await;
+
+        Ok(crate::ExchangeRate::new(from.clone(), to.clone(), rate))
+    }
+
+    pub async fn convert_amount(
+        &self,
+        amount: Decimal,
+        from: &Currency,
+        to: &Currency,
+    ) -> Result<Decimal, LedgerError> {
+        let rate = self.get_exchange_rate(from, to).await?;
+        Ok(rate.convert(amount))
+    }
+
+    pub async fn account_value_in(
+        &mut self,
+        account_id: AccountId,
+        target_currency: &Currency,
+    ) -> Result<Decimal, LedgerError> {
+        let account = self
+            .store
+            .get_account(account_id)
+            .await?
+            .ok_or(LedgerError::AccountNotFound(account_id))?;
+
+        let balance = self.account_balance(account_id).await?;
+
+        if &account.currency == target_currency {
+            return Ok(balance);
+        }
+
+        self.convert_amount(balance, &account.currency, target_currency)
+            .await
+    }
+
+    pub async fn clear_rate_cache(&self) -> Result<(), LedgerError> {
+        let cache = self.rate_cache.as_ref().ok_or_else(|| {
+            LedgerError::Storage("Rate cache not initialized".to_string())
+        })?;
+        cache.clear().await;
+        Ok(())
     }
 }
 
