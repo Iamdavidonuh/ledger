@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.3.0...backend-v0.3.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **docker:** install pkg-config and libssl-dev for reqwest native-tls build ([29aa893](https://github.com/Iamdavidonuh/ledger/commit/29aa893c70fb2046d25d5ddebf785d965437e7c2))
+
 ## [0.3.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.2.0...backend-v0.3.0) (2026-10-11)
 
 
