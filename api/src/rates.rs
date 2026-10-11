@@ -3,13 +3,13 @@ use crate::state::WithRates;
 use axum::extract::{Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use ledger_core::{Currency, ExchangeRate};
+use ledger_core::Currency;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct GetRateQuery {
-    pub from: String,
-    pub to: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -30,9 +30,13 @@ async fn get_rate<S: WithRates>(
     State(state): State<S>,
     Query(query): Query<GetRateQuery>,
 ) -> Result<Json<RateResponse>, AppError> {
-    let from = Currency::new(&query.from)
+    // Both params required for single rate lookup
+    let from_str = query.from.ok_or_else(|| AppError::BadRequest("Missing 'from' parameter".to_string()))?;
+    let to_str = query.to.ok_or_else(|| AppError::BadRequest("Missing 'to' parameter".to_string()))?;
+    
+    let from = Currency::new(&from_str)
         .map_err(|e| AppError::BadRequest(format!("Invalid from currency: {}", e)))?;
-    let to = Currency::new(&query.to)
+    let to = Currency::new(&to_str)
         .map_err(|e| AppError::BadRequest(format!("Invalid to currency: {}", e)))?;
 
     let rate = state.get_rate(&from, &to).await?;

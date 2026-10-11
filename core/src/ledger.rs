@@ -87,6 +87,27 @@ impl<S: LedgerStore> Ledger<S> {
         Ok(account.opening_balance + posted)
     }
 
+    pub async fn account_balance_at(
+        &mut self,
+        account_id: AccountId,
+        date: NaiveDate,
+    ) -> Result<Decimal, LedgerError> {
+        let account = self
+            .store
+            .get_account(account_id)
+            .await?
+            .ok_or(LedgerError::AccountNotFound(account_id))?;
+        let posted: Decimal = self
+            .store
+            .entries_for_account(account_id)
+            .await?
+            .into_iter()
+            .filter(|e| !e.is_voided() && e.bank_state != BankState::Reverted && e.date <= date)
+            .map(|e| e.amount)
+            .sum();
+        Ok(account.opening_balance + posted)
+    }
+
     pub async fn accounts(&mut self) -> Result<Vec<Account>, LedgerError> {
         self.store.all_accounts().await
     }
@@ -500,6 +521,23 @@ impl<S: LedgerStore> Ledger<S> {
             .ok_or(LedgerError::AccountNotFound(transfer_account_id))?;
         
         entry.transfer_account_id = Some(transfer_account_id);
+        self.store.save_entry(entry.clone()).await?;
+        Ok(entry)
+    }
+
+    pub async fn unmark_entry_transfer(
+        &mut self,
+        entry_id: EntryId,
+    ) -> Result<Entry, LedgerError> {
+        let mut entry = self
+            .store
+            .get_entry(entry_id)
+            .await?
+            .ok_or(LedgerError::EntryNotFound(entry_id))?;
+        if entry.is_voided() {
+            return Err(LedgerError::AlreadyVoided);
+        }
+        entry.transfer_account_id = None;
         self.store.save_entry(entry.clone()).await?;
         Ok(entry)
     }

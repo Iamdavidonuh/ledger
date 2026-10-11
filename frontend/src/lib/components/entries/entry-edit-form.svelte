@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { api, ApiError, type Entry, type EntryKind, type PotWithBalance } from '$lib/api';
+	import { api, ApiError, type AccountWithBalance, type Entry, type EntryKind, type PotWithBalance } from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
 
 	// Category, tags, note and pot are always editable, even on an imported
@@ -10,11 +10,13 @@
 	let {
 		entry,
 		pots,
+		accounts = [],
 		onupdated,
 		oncancel
 	}: {
 		entry: Entry;
 		pots: PotWithBalance[];
+		accounts?: AccountWithBalance[];
 		onupdated: (entry: Entry) => void;
 		oncancel: () => void;
 	} = $props();
@@ -29,8 +31,12 @@
 	let tagsInput = $state(untrack(() => entry.tags.join(', ')));
 	let potId = $state(untrack(() => entry.pot_id ?? ''));
 	let note = $state(untrack(() => entry.note ?? ''));
+	let isTransfer = $state(untrack(() => entry.transfer_account_id !== null));
+	let transferAccountId = $state(untrack(() => entry.transfer_account_id ?? ''));
 	let busy = $state(false);
 	let error = $state<string | null>(null);
+
+	const otherAccounts = $derived(accounts.filter((a) => a.id !== entry.account_id && a.currency === entry.currency));
 
 	const amountText = $derived(amount.trim().replace(',', '.'));
 	const amountValid = $derived(!amountEditable || (amountText !== '' && Number(amountText) >= 0));
@@ -53,7 +59,12 @@
 				category: category.trim() || null,
 				tags,
 				note: note.trim() || null,
-				pot_id: potId || null
+				pot_id: potId || null,
+				...(isTransfer && transferAccountId
+					? { transfer_account_id: transferAccountId }
+					: !isTransfer && entry.transfer_account_id !== null
+						? { clear_transfer: true }
+						: {})
 			});
 			onupdated(updated);
 		} catch (err) {
@@ -90,6 +101,37 @@
 				bind:value={amount}
 			/>
 		</div>
+	{/if}
+
+	{#if accounts.length > 0}
+		<label for="transfer-toggle-{uid}" class="flex cursor-pointer items-center gap-3 rounded-lg border border-border bg-page px-3 py-2.5">
+			<input id="transfer-toggle-{uid}" type="checkbox" class="sr-only" bind:checked={isTransfer} />
+			<span
+				class="relative inline-flex h-5 w-9 flex-shrink-0 rounded-full transition-colors {isTransfer ? 'bg-primary' : 'bg-border'}"
+				aria-hidden="true"
+			>
+				<span
+					class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform {isTransfer ? 'translate-x-4' : 'translate-x-0.5'} mt-0.5"
+				></span>
+			</span>
+			<div>
+				<div class="text-sm font-semibold">This is a transfer</div>
+				<div class="text-xs text-muted">Moving value to another account, not spending</div>
+			</div>
+		</label>
+		{#if isTransfer && otherAccounts.length > 0}
+			<div class="flex flex-col gap-1">
+				<label for="transfer-account-{uid}" class="text-xs font-semibold text-muted">Other account</label>
+				<select id="transfer-account-{uid}" class="min-h-9 rounded-lg border border-border bg-page px-2.5 text-sm" bind:value={transferAccountId}>
+					<option value="">— pick account —</option>
+					{#each otherAccounts as a (a.id)}
+						<option value={a.id}>{a.name}</option>
+					{/each}
+				</select>
+			</div>
+		{:else if isTransfer}
+			<p class="text-xs text-muted">No other {entry.currency} accounts to link.</p>
+		{/if}
 	{/if}
 
 	<div class="grid gap-2 @md:grid-cols-2">

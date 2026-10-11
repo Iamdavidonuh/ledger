@@ -102,7 +102,11 @@ export const api = {
 		archive: (id: string) => post<Account>(`/accounts/${id}/archive`),
 		unarchive: (id: string) => post<Account>(`/accounts/${id}/unarchive`),
 		updateCurrentValue: (id: string, req: UpdateValueRequest) =>
-			post<Valuation>(`/accounts/${id}/current-value`, req)
+			post<Valuation>(`/accounts/${id}/current-value`, req),
+		balanceAt: (id: string, date: string) =>
+			get<{ balance: string }>(`/accounts/${id}/balance-at?date=${date}`),
+		valueIn: (id: string, currency: string) =>
+			get<{ value: string; currency: string }>(`/accounts/${id}/value-in?currency=${currency}`)
 	},
 	entries: {
 		list: (accountId: string) => get<Entry[]>(`/entries?account_id=${accountId}`),
@@ -116,7 +120,11 @@ export const api = {
 		updateMetadata: (id: string, req: UpdateEntryMetadataRequest) => patch<Entry>(`/entries/${id}`, req),
 		editAmount: (id: string, req: EditAmountRequest) => patch<Entry>(`/entries/${id}/amount`, req),
 		void: (id: string, req: VoidRequest) => post<Entry>(`/entries/${id}/void`, req),
-		confirm: (id: string) => post<Entry>(`/entries/${id}/confirm`)
+		confirm: (id: string) => post<Entry>(`/entries/${id}/confirm`),
+		split: (id: string, parts: { amount: string; category?: string }[]) =>
+			post<{ id: string; amount: string; category?: string }[]>(`/entries/${id}/split`, { parts }),
+		parts: (id: string) =>
+			get<{ id: string; amount: string; category?: string }[]>(`/entries/${id}/parts`)
 	},
 	pots: {
 		list: () => get<PotWithBalance[]>('/pots'),
@@ -148,6 +156,13 @@ export const api = {
 		resolveRevert: (id: string, rowId: string) => post<Entry>(`/imports/${id}/queue/${rowId}/resolve-revert`),
 		updateCategory: (id: string, rowId: string, req: UpdateQueueRowCategoryRequest) =>
 			patch<PatchedQueueRow>(`/imports/${id}/queue/${rowId}`, req),
-		discard: (id: string, rowId: string) => post<void>(`/imports/${id}/queue/${rowId}/discard`)
+		discard: (id: string, rowId: string) => post<void>(`/imports/${id}/queue/${rowId}/discard`),
+		mergeIntoEntry: (importId: string, rowId: string, entryId: string) =>
+			post<Entry>(`/imports/${importId}/queue/${rowId}/merge-into-entry`, { entry_id: entryId })
+	},
+	rates: {
+		get: (from: string, to: string) =>
+			get<{ from: string; to: string; rate: string; fetched_at: string }>(`/rates?from=${from}&to=${to}`),
+		refresh: () => post<void>('/rates/refresh')
 	}
 };

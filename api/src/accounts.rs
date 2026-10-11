@@ -3,6 +3,7 @@ use crate::state::{WithLedger, WithRates};
 use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::NaiveDate;
 use ledger_core::{Account, AccountId, AccountKind, Currency, LedgerError};
 use rust_decimal::Decimal;
 
@@ -31,6 +32,7 @@ pub fn router<S: WithLedger + WithRates>() -> Router<S> {
         .route("/accounts/:id/archive", post(archive_account::<S>))
         .route("/accounts/:id/unarchive", post(unarchive_account::<S>))
         .route("/accounts/:id/value-in", get(account_value_in::<S>))
+        .route("/accounts/:id/balance-at", get(balance_at::<S>))
 }
 
 async fn create_account<S: WithLedger>(
@@ -137,6 +139,35 @@ async fn account_value_in<S: WithLedger + WithRates>(
     Ok(Json(ValueInResponse {
         value: value.to_string(),
         currency: target_currency.code().to_string(),
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct BalanceAtQuery {
+    date: String,
+}
+
+#[derive(serde::Serialize)]
+struct BalanceResponse {
+    balance: String,
+}
+
+async fn balance_at<S: WithLedger>(
+    State(state): State<S>,
+    Path(id): Path<AccountId>,
+    Query(query): Query<BalanceAtQuery>,
+) -> Result<Json<BalanceResponse>, AppError> {
+    let date = NaiveDate::parse_from_str(&query.date, "%Y-%m-%d")
+        .map_err(|e| AppError::BadRequest(format!("Invalid date format: {}", e)))?;
+
+    let balance = state
+        .with_ledger(move |ledger| {
+            Box::pin(async move { ledger.account_balance_at(id, date).await })
+        })
+        .await?;
+
+    Ok(Json(BalanceResponse {
+        balance: balance.to_string(),
     }))
 }
 

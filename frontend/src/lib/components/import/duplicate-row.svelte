@@ -26,7 +26,8 @@
 		onaccept,
 		ondiscard,
 		onsetcategory,
-		ontransfer
+		ontransfer,
+		onmerge
 	}: {
 		row: NormalQueueRow;
 		account: AccountWithBalance;
@@ -39,6 +40,7 @@
 		ondiscard: () => void;
 		onsetcategory: (category: string | null) => void;
 		ontransfer: (request: AcceptAsTransferRequest) => void;
+		onmerge?: (entryId: string) => void;
 	} = $props();
 
 	let category = $state(untrack(() => row.category ?? ''));
@@ -105,7 +107,19 @@
 		/>
 
 		<div class="flex flex-wrap gap-3">
-			<Button size="sm" class="max-lg:h-11" disabled={busy} onclick={ondiscard}>Discard duplicate</Button>
+			{#if onmerge && matchedEntries.length === 1}
+				<Button
+					size="sm"
+					class="max-lg:h-11"
+					disabled={busy}
+					onclick={() => onmerge!(matchedEntries[0].id)}
+				>
+					Same payment — merge bank data in
+				</Button>
+				<Button size="sm" variant="outline" class="max-lg:h-11" disabled={busy} onclick={ondiscard}>Discard duplicate</Button>
+			{:else}
+				<Button size="sm" class="max-lg:h-11" disabled={busy} onclick={ondiscard}>Discard duplicate</Button>
+			{/if}
 			<Button
 				size="sm"
 				variant="outline"

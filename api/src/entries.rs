@@ -4,7 +4,7 @@ use axum::extract::{Path, Query, State};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use chrono::NaiveDate;
-use ledger_core::{AccountId, Entry, EntryId, EntryMetadata, EntryPart, PotId};
+use ledger_core::{AccountId, Entry, EntryId, EntryMetadata, PotId};
 use rust_decimal::Decimal;
 
 #[derive(serde::Deserialize, Clone, Copy)]
@@ -53,6 +53,9 @@ pub struct UpdateEntryMetadataRequest {
     pub tags: Vec<String>,
     pub note: Option<String>,
     pub pot_id: Option<PotId>,
+    pub transfer_account_id: Option<AccountId>,
+    #[serde(default)]
+    pub clear_transfer: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -74,6 +77,13 @@ pub struct SplitEntryRequest {
 #[derive(serde::Deserialize)]
 pub struct SplitPart {
     pub amount: Decimal,
+    pub category: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+pub struct SplitPartResponse {
+    pub id: String,
+    pub amount: String,
     pub category: Option<String>,
 }
 
@@ -134,7 +144,7 @@ async fn update_metadata<S: WithLedger>(
     let entry = state
         .with_ledger(move |ledger| {
             Box::pin(async move {
-                ledger
+                let entry = ledger
                     .update_entry_metadata(
                         id,
                         EntryMetadata {
@@ -144,7 +154,16 @@ async fn update_metadata<S: WithLedger>(
                             pot_id: req.pot_id,
                         },
                     )
-                    .await
+                    .await?;
+                // Transfer changes are applied after metadata so both can be
+                // updated in one request. clear_transfer wins over a new id.
+                if req.clear_transfer {
+                    ledger.unmark_entry_transfer(id).await
+                } else if let Some(transfer_account_id) = req.transfer_account_id {
+                    ledger.mark_entry_as_transfer(id, transfer_account_id).await
+                } else {
+                    Ok(entry)
+                }
             })
         })
         .await?;
@@ -196,7 +215,7 @@ async fn split_entry<S: WithLedger>(
     State(state): State<S>,
     Path(id): Path<EntryId>,
     AppJson(req): AppJson<SplitEntryRequest>,
-) -> Result<Json<Vec<EntryPart>>, AppError> {
+) -> Result<Json<Vec<SplitPartResponse>>, AppError> {
     let parts: Vec<(Decimal, Option<String>)> = req
         .parts
         .into_iter()
@@ -207,17 +226,37 @@ async fn split_entry<S: WithLedger>(
             Box::pin(async move { ledger.split_entry(id, parts).await })
         })
         .await?;
-    Ok(Json(entry_parts))
+    
+    let response = entry_parts
+        .into_iter()
+        .map(|p| SplitPartResponse {
+            id: p.id.to_string(),
+            amount: p.amount.to_string(),
+            category: p.category,
+        })
+        .collect();
+    
+    Ok(Json(response))
 }
 
 async fn get_entry_parts<S: WithLedger>(
     State(state): State<S>,
     Path(id): Path<EntryId>,
-) -> Result<Json<Vec<EntryPart>>, AppError> {
+) -> Result<Json<Vec<SplitPartResponse>>, AppError> {
     let parts = state
         .with_ledger(move |ledger| Box::pin(async move { ledger.parts_for_entry(id).await }))
         .await?;
-    Ok(Json(parts))
+    
+    let response = parts
+        .into_iter()
+        .map(|p| SplitPartResponse {
+            id: p.id.to_string(),
+            amount: p.amount.to_string(),
+            category: p.category,
+        })
+        .collect();
+    
+    Ok(Json(response))
 }
 
 async fn mark_as_transfer<S: WithLedger>(
@@ -507,11 +546,11 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        let parts: Vec<EntryPart> = serde_json::from_slice(&body).unwrap();
+        let parts: Vec<SplitPartResponse> = serde_json::from_slice(&body).unwrap();
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0].amount, rust_decimal_macros::dec!(-60));
+        assert_eq!(parts[0].amount, "-60");
         assert_eq!(parts[0].category, Some("Food".to_string()));
-        assert_eq!(parts[1].amount, rust_decimal_macros::dec!(-40));
+        assert_eq!(parts[1].amount, "-40");
         assert_eq!(parts[1].category, Some("Household".to_string()));
 
         let response = app(state)
@@ -525,8 +564,10 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        let retrieved: Vec<EntryPart> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(retrieved, parts);
+        let retrieved: Vec<SplitPartResponse> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(retrieved.len(), parts.len());
+        assert_eq!(retrieved[0].amount, parts[0].amount);
+        assert_eq!(retrieved[1].amount, parts[1].amount);
     }
 
     #[tokio::test]

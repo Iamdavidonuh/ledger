@@ -168,6 +168,12 @@
 			'Could not save this transfer.'
 		);
 
+	function mergeIntoExisting(row: NormalQueueRow, entryId: string) {
+		// TODO: wire up when API exists (POST /imports/:id/queue/:row/merge-into/:entry)
+		console.warn('merge not yet implemented', { rowId: row.id, entryId });
+		actionError = 'Merge is not yet available — the API endpoint is still pending. Use "Discard duplicate" for now.';
+	}
+
 	const discard = (row: ImportQueueRow) =>
 		run(row.id, () => api.imports.discard(importId, row.id), 'Could not discard this row.');
 
@@ -332,13 +338,13 @@
 							{rows.length === 1 ? 'row' : 'rows'} to review
 						</p>
 						{#if statement}
-							<p class="text-xs text-muted-2">
-								The statement balance check passed. It closes at {formatMoney(
-									Number(statement.closing_balance),
-									statement.currency
-								)}.
-							</p>
-						{/if}
+								<p class="text-xs text-muted-2">
+									It closes at {formatMoney(
+										Number(statement.closing_balance),
+										statement.currency
+									)}.
+								</p>
+							{/if}
 					</div>
 
 					<dl class="grid grid-cols-3 gap-2 text-center">
@@ -425,6 +431,7 @@
 								ondiscard={() => discard(row)}
 								onsetcategory={(category) => saveCategory(row, category)}
 								ontransfer={(request) => moveToAccount(row, request)}
+								onmerge={(entryId) => mergeIntoExisting(row, entryId)}
 							/>
 						{/each}
 					</section>

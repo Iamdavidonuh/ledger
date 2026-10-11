@@ -17,11 +17,29 @@
 	// Grouped by currency rather than blended into one number: summing
 	// balances across currencies without a conversion rate would silently
 	// produce a wrong total for anyone with more than one currency.
+	// Includes investment accounts at current_value (or balance as fallback);
+	// outside and person accounts are excluded from net worth.
 	const netWorthByCurrency = $derived.by(() => {
+		const totals = new Map<string, { cash: number; investments: number }>();
+		for (const account of accounts) {
+			if (account.kind === 'outside' || account.kind === 'person') continue;
+			const entry = totals.get(account.currency) ?? { cash: 0, investments: 0 };
+			if (account.kind === 'own') {
+				entry.cash += Number(account.balance);
+			} else if (account.kind === 'investment') {
+				entry.investments += Number(account.current_value ?? account.balance);
+			}
+			totals.set(account.currency, entry);
+		}
+		return totals;
+	});
+
+	const owedToYou = $derived.by(() => {
 		const totals = new Map<string, number>();
 		for (const account of accounts) {
-			if (account.kind !== 'own') continue;
-			totals.set(account.currency, (totals.get(account.currency) ?? 0) + Number(account.balance));
+			if (account.kind !== 'person') continue;
+			const bal = Number(account.balance);
+			if (bal > 0) totals.set(account.currency, (totals.get(account.currency) ?? 0) + bal);
 		}
 		return totals;
 	});
@@ -38,7 +56,8 @@
 
 	function generalSavings(currency: string): number {
 		const potsTotal = (potsByCurrency.get(currency) ?? []).reduce((sum, pot) => sum + Number(pot.balance), 0);
-		return (netWorthByCurrency.get(currency) ?? 0) - potsTotal;
+		const entry = netWorthByCurrency.get(currency);
+		return ((entry?.cash ?? 0) + (entry?.investments ?? 0)) - potsTotal;
 	}
 
 	onMount(load);
@@ -106,20 +125,32 @@
 			</CardContent>
 		</Card>
 	{:else}
-		{#each [...netWorthByCurrency.entries()] as [currency, total] (currency)}
+		{#each [...netWorthByCurrency.entries()] as [currency, totals] (currency)}
+			{@const total = totals.cash + totals.investments}
 			<Card>
 				<div class="flex flex-col gap-4 p-5 lg:flex-row lg:items-center lg:justify-between lg:gap-6">
-					<div>
+					<div class="flex flex-col gap-2">
 						<div class="text-xs font-semibold tracking-wide text-muted uppercase">
 							Net worth{netWorthByCurrency.size > 1 ? ` (${currency})` : ''}
 						</div>
 						<div class="font-display text-4xl font-bold">{formatMoney(total, currency)}</div>
+						{#if totals.investments > 0}
+							<div class="flex gap-4 text-xs text-muted">
+								<span>Cash <span class="font-display font-semibold text-foreground">{formatMoney(totals.cash, currency)}</span></span>
+								<span>Investments <span class="font-display font-semibold text-foreground">{formatMoney(totals.investments, currency)}</span></span>
+							</div>
+						{/if}
+						{#if (owedToYou.get(currency) ?? 0) > 0}
+							<div class="text-xs text-primary">
+								Owed to you: <span class="font-display font-semibold">{formatMoney(owedToYou.get(currency)!, currency)}</span> (not in net worth)
+							</div>
+						{/if}
 					</div>
 					<div class="flex flex-wrap gap-2">
-						{#each accounts.filter((a) => a.kind === 'own' && a.currency === currency) as account (account.id)}
+						{#each accounts.filter((a) => (a.kind === 'own' || a.kind === 'investment') && a.currency === currency) as account (account.id)}
 							<div class="flex items-center gap-1.5 rounded-lg bg-page px-2.5 py-1.5 text-xs">
 								<span class="text-muted">{account.name}</span>
-								<span class="font-display font-semibold">{formatMoney(Number(account.balance), currency)}</span>
+								<span class="font-display font-semibold">{formatMoney(Number(account.current_value ?? account.balance), currency)}</span>
 							</div>
 						{/each}
 					</div>

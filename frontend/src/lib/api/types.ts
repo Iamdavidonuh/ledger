@@ -83,6 +83,8 @@ export interface UpdateEntryMetadataRequest {
 	tags: string[];
 	note: string | null;
 	pot_id: string | null;
+	transfer_account_id?: string | null;
+	clear_transfer?: boolean;
 }
 
 export interface EditAmountRequest {

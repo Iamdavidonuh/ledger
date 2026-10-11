@@ -204,6 +204,7 @@
 								<EntryEditForm
 									{entry}
 									{pots}
+									{accounts}
 									onupdated={(updated) => {
 										replaceEntry(updated);
 										editingId = null;
@@ -225,11 +226,16 @@
 										</div>
 									</div>
 								{:else}
-									<div class="flex gap-2 border-t border-border pt-2">
+									<div class="flex flex-wrap gap-2 border-t border-border pt-2">
 										{#if entry.source === 'manual' && !entry.confirmed}
 											<Button size="sm" variant="outline" onclick={() => confirmEntry(entry.id)}>Confirm</Button>
 										{/if}
 										<Button size="sm" variant="ghost" onclick={() => (editingId = entry.id)}>Edit</Button>
+										<Button
+											size="sm"
+											variant="ghost"
+											href="/entries/split?entry={entry.id}&account={entry.account_id}"
+										>Split</Button>
 										<Button size="sm" variant="ghost" onclick={() => startVoiding(entry.id)}>Void</Button>
 									</div>
 								{/if}
