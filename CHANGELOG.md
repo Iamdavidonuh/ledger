@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.2.0...backend-v0.3.0) (2026-10-11)
+
+
+### Features
+
+* add entry parts, balance reconciliation, transfer marking, and import merge ([ce79c78](https://github.com/Iamdavidonuh/ledger/commit/ce79c78d7313952c9b3b252a03bbd5cf817653f5))
+* add exchange rate fetching and caching for multi-currency support ([bdff94f](https://github.com/Iamdavidonuh/ledger/commit/bdff94fa4f5e0a0e5bac50a50261dd239a0afc5e))
+* **frontend:** wire import merge endpoint and compute blended net worth on rates page ([b054317](https://github.com/Iamdavidonuh/ledger/commit/b0543171f95faf86ee2e7da41c49321a8634bcb8))
+
+
+### Bug Fixes
+
+* **api:** add balance-at endpoint, clear_transfer flag, and unmark-transfer ([9464b50](https://github.com/Iamdavidonuh/ledger/commit/9464b50eee2a106d5ee1b54f7e4defd401b6f9be))
+
 ## [0.2.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.1.1...backend-v0.2.0) (2026-10-04)
 
 
