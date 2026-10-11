@@ -168,11 +168,8 @@
 			'Could not save this transfer.'
 		);
 
-	function mergeIntoExisting(row: NormalQueueRow, entryId: string) {
-		// TODO: wire up when API exists (POST /imports/:id/queue/:row/merge-into/:entry)
-		console.warn('merge not yet implemented', { rowId: row.id, entryId });
-		actionError = 'Merge is not yet available — the API endpoint is still pending. Use "Discard duplicate" for now.';
-	}
+	const mergeIntoExisting = (row: NormalQueueRow, entryId: string) =>
+		run(row.id, () => api.imports.mergeIntoEntry(importId, row.id, entryId), 'Could not merge bank data into this entry.');
 
 	const discard = (row: ImportQueueRow) =>
 		run(row.id, () => api.imports.discard(importId, row.id), 'Could not discard this row.');
