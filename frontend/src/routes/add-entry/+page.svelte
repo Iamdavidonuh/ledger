@@ -30,6 +30,15 @@
 	// everywhere its own history already exists (Entries, Stats), but
 	// never as a destination for something new.
 	const activeAccounts = $derived(accounts.filter((a) => !a.archived));
+	// Expenses and income only make sense on accounts you own.
+	const ownAccounts = $derived(activeAccounts.filter((a) => a.kind === 'own'));
+	// Transfers can only originate from accounts you own.
+	const fromAccountOptions = $derived(ownAccounts);
+	// Transfers can go to any non-outside account (savings, investments, people)
+	// except the source account itself.
+	const toAccountOptions = $derived(
+		activeAccounts.filter((a) => a.kind !== 'outside' && a.id !== fromAccountId)
+	);
 
 	const fromAccount = $derived(accounts.find((a) => a.id === fromAccountId));
 	const toAccount = $derived(accounts.find((a) => a.id === toAccountId));
@@ -38,15 +47,14 @@
 	);
 	const selectedAccount = $derived(accounts.find((a) => a.id === accountId));
 	const potsForAccount = $derived(pots.filter((p) => p.currency === selectedAccount?.currency));
-	const toAccountOptions = $derived(activeAccounts.filter((a) => a.id !== fromAccountId));
 
 	onMount(async () => {
 		try {
 			[accounts, pots] = await Promise.all([api.accounts.list(), api.pots.list()]);
-			if (activeAccounts.length > 0) {
-				accountId = activeAccounts[0].id;
-				fromAccountId = activeAccounts[0].id;
-				toAccountId = activeAccounts.find((a) => a.id !== activeAccounts[0].id)?.id ?? '';
+					if (ownAccounts.length > 0) {
+					accountId = ownAccounts[0].id;
+					fromAccountId = ownAccounts[0].id;
+					toAccountId = activeAccounts.find((a) => a.kind !== 'outside' && a.id !== ownAccounts[0].id)?.id ?? '';
 			}
 		} catch (err) {
 			loadError = err instanceof ApiError ? err.message : 'Something went wrong loading your accounts.';
@@ -144,7 +152,7 @@
 					<p class="text-sm text-muted">Loading...</p>
 				{:else if loadError}
 					<p class="text-sm text-warn-foreground">{loadError}</p>
-				{:else if activeAccounts.length === 0}
+				{:else if ownAccounts.length === 0}
 					<p class="text-sm text-muted">
 						{accounts.length === 0 ? 'Open an account first.' : 'Unarchive an account first.'}
 					</p>
@@ -185,7 +193,7 @@
 					<label class="flex flex-col gap-2">
 						<span class="text-xs font-semibold tracking-wide text-muted uppercase">Account</span>
 						<select class="rounded-xl border border-border bg-card p-3 text-sm" bind:value={accountId}>
-							{#each activeAccounts as account (account.id)}
+							{#each ownAccounts as account (account.id)}
 								<option value={account.id}>{account.name} ({account.currency})</option>
 							{/each}
 						</select>
@@ -217,7 +225,7 @@
 					<label class="flex flex-col gap-2">
 						<span class="text-xs font-semibold tracking-wide text-muted uppercase">From account</span>
 						<select class="rounded-xl border border-border bg-card p-3 text-sm" bind:value={fromAccountId}>
-							{#each activeAccounts as account (account.id)}
+							{#each fromAccountOptions as account (account.id)}
 								<option value={account.id}>{account.name} ({account.currency})</option>
 							{/each}
 						</select>

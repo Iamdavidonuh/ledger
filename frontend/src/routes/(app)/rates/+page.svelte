@@ -25,12 +25,19 @@
 	let error = $state<string | null>(null);
 	let accounts = $state<AccountWithBalance[]>([]);
 
-	// Base currency: most common currency among own/investment accounts, or first found
+	// Frankfurter covers these major fiat currencies. Prefer one of them as the
+	// base so that cross-currency conversions are possible. Falls back to the
+	// most common currency if none of the preferred ones are held.
+	const PREFERRED_BASE = ['EUR', 'USD', 'GBP', 'CHF'];
+
 	const baseCurrency = $derived.by(() => {
 		const netWorthAccounts = accounts.filter(
 			(a) => !a.archived && (a.kind === 'own' || a.kind === 'investment')
 		);
 		if (netWorthAccounts.length === 0) return 'EUR';
+		const held = new Set(netWorthAccounts.map((a) => a.currency));
+		const preferred = PREFERRED_BASE.find((c) => held.has(c));
+		if (preferred) return preferred;
 		const counts = new Map<string, number>();
 		for (const a of netWorthAccounts) counts.set(a.currency, (counts.get(a.currency) ?? 0) + 1);
 		return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
