@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.4.0...backend-v0.4.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **release:** combine into single release PR to avoid manifest merge conflicts ([bd7a85d](https://github.com/Iamdavidonuh/ledger/commit/bd7a85dfe435a8dc0bf6efbd15fe9cf5ea0feab9))
+
 ## [0.4.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.3.1...backend-v0.4.0) (2026-10-17)
 
 
