@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/Iamdavidonuh/ledger/compare/frontend-v0.1.0...frontend-v0.1.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* **frontend:** prefer major fiat as rates base currency, filter account dropdowns by kind ([45ce947](https://github.com/Iamdavidonuh/ledger/commit/45ce9479ae68ee1847d43b6da99244398fc5c999))
+
 ## [0.1.0](https://github.com/Iamdavidonuh/ledger/compare/frontend-v0.0.1...frontend-v0.1.0) (2026-10-12)
 
 
