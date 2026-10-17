@@ -16,8 +16,8 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      backend_released: ${{ steps.release.outputs.release_created }}
-      backend_tag: ${{ steps.release.outputs.tag_name }}
+      backend_released: ${{ steps.release.outputs['backend--release_created'] }}
+      backend_tag: ${{ steps.release.outputs['backend--tag_name'] }}
       frontend_released: ${{ steps.release.outputs['frontend--release_created'] }}
       frontend_tag: ${{ steps.release.outputs['frontend--tag_name'] }}
     steps:
