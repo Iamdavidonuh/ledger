@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.3.1...backend-v0.4.0) (2026-10-17)
+
+
+### Features
+
+* **rates:** add open.er-api.com as fallback fiat source for currencies Frankfurter does not cover (e.g. NGN) ([e919418](https://github.com/Iamdavidonuh/ledger/commit/e919418d435718886cf532a4fc515f3c214deb86))
+
+
+### Bug Fixes
+
+* **frontend:** prefer major fiat as rates base currency, filter account dropdowns by kind ([45ce947](https://github.com/Iamdavidonuh/ledger/commit/45ce9479ae68ee1847d43b6da99244398fc5c999))
+
 ## [0.3.1](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.3.0...backend-v0.3.1) (2026-10-11)
 
 
