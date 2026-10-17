@@ -172,8 +172,72 @@ struct CoinData {
     usd: f64,
 }
 
+// Fallback fiat client using open.er-api.com (free, no API key, covers NGN
+// and other currencies Frankfurter does not).
+pub struct OpenErClient {
+    http: reqwest::Client,
+    base_url: String,
+}
+
+impl OpenErClient {
+    pub fn new() -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: "https://open.er-api.com/v6".to_string(),
+        }
+    }
+
+    pub async fn get_rate(&self, from: &Currency, to: &Currency) -> Result<Decimal, LedgerError> {
+        let url = format!("{}/latest/{}", self.base_url, from.code());
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| LedgerError::ExchangeRateFetchFailed(format!("OpenER fetch failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            return Err(LedgerError::ExchangeRateFetchFailed(format!(
+                "OpenER returned status {}",
+                resp.status()
+            )));
+        }
+
+        let data: OpenErResponse = resp.json().await.map_err(|e| {
+            LedgerError::ExchangeRateFetchFailed(format!("OpenER parse failed: {}", e))
+        })?;
+
+        if data.result != "success" {
+            return Err(LedgerError::ExchangeRateFetchFailed(
+                "OpenER returned non-success result".to_string(),
+            ));
+        }
+
+        let rate_f64 = data
+            .rates
+            .get(to.code())
+            .ok_or_else(|| LedgerError::ExchangeRateFetchFailed(format!("OpenER: no rate for {}", to.code())))?;
+
+        Decimal::try_from(*rate_f64)
+            .map_err(|e| LedgerError::ExchangeRateFetchFailed(format!("OpenER: invalid rate value: {}", e)))
+    }
+}
+
+impl Default for OpenErClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Deserialize)]
+struct OpenErResponse {
+    result: String,
+    rates: HashMap<String, f64>,
+}
+
 pub struct RateFetcher {
     fiat_client: FrankfurterClient,
+    fiat_fallback: OpenErClient,
     crypto_client: CoinGeckoClient,
 }
 
@@ -181,6 +245,7 @@ impl RateFetcher {
     pub fn new() -> Self {
         Self {
             fiat_client: FrankfurterClient::new(),
+            fiat_fallback: OpenErClient::new(),
             crypto_client: CoinGeckoClient::new(),
         }
     }
@@ -206,16 +271,27 @@ impl RateFetcher {
         }
     }
 
+    async fn fetch_fiat(&self, from: &Currency, to: &Currency) -> Result<Decimal, LedgerError> {
+        // Try Frankfurter first; fall back to open.er-api.com for currencies it
+        // does not cover (e.g. NGN).
+        match self.fiat_client.get_rate(from, to).await {
+            Ok(rate) => return Ok(rate),
+            Err(LedgerError::ExchangeRateFetchFailed(_)) => {}
+            Err(e) => return Err(e),
+        }
+        self.fiat_fallback.get_rate(from, to).await
+    }
+
     async fn fetch_once(&self, from: &Currency, to: &Currency) -> Result<Decimal, LedgerError> {
         if from == to {
             return Ok(Decimal::ONE);
         }
 
-        // Try fiat-to-fiat first (try and let API fail if unsupported)
-        match self.fiat_client.get_rate(from, to).await {
+        // Try fiat-to-fiat (Frankfurter, then open.er-api.com fallback).
+        match self.fetch_fiat(from, to).await {
             Ok(rate) => return Ok(rate),
             Err(LedgerError::ExchangeRateFetchFailed(_)) => {
-                // Fiat failed, try crypto
+                // Both fiat sources failed; try crypto path.
             }
             Err(e) => return Err(e),
         }
@@ -225,14 +301,14 @@ impl RateFetcher {
             return self.crypto_client.get_rate(from, to).await;
         }
 
-        // Try crypto-to-fiat via USD
+        // Try crypto-to-fiat via USD.
         // CoinGecko free tier only supports USD conversion. Route through USD:
         // fetch crypto→USD, then USD→fiat, and multiply. Precision loss is negligible
         // for display purposes but compounds in repeated conversions.
         let usd = Currency::new("USD").map_err(|e| LedgerError::ExchangeRateFetchFailed(e.to_string()))?;
         match self.crypto_client.get_rate(from, &usd).await {
             Ok(crypto_to_usd) => {
-                let usd_to_fiat = self.fiat_client.get_rate(&usd, to).await?;
+                let usd_to_fiat = self.fetch_fiat(&usd, to).await?;
                 Ok(crypto_to_usd * usd_to_fiat)
             }
             Err(_) => Err(LedgerError::UnsupportedConversion {
