@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/Iamdavidonuh/ledger/compare/frontend-v0.1.1...frontend-v0.2.0) (2026-10-18)
+
+
+### Features
+
+* add manual revert entry endpoint and UI button ([01e1d24](https://github.com/Iamdavidonuh/ledger/commit/01e1d24c977b1ca87313ac0227418b1589dd8cbf))
+* **frontend:** add category and tags autocomplete across add-entry, edit form, and split page ([1d595b5](https://github.com/Iamdavidonuh/ledger/commit/1d595b54acb4e1313ab80962fba2c4e170a16e74))
+
 ## [0.1.1](https://github.com/Iamdavidonuh/ledger/compare/frontend-v0.1.0...frontend-v0.1.1) (2026-10-17)
 
 
