@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.4.0...backend-v0.5.0) (2026-10-18)
+
+
+### Features
+
+* add manual revert entry endpoint and UI button ([01e1d24](https://github.com/Iamdavidonuh/ledger/commit/01e1d24c977b1ca87313ac0227418b1589dd8cbf))
+
+
+### Bug Fixes
+
+* **release:** combine into single release PR to avoid manifest merge conflicts ([bd7a85d](https://github.com/Iamdavidonuh/ledger/commit/bd7a85dfe435a8dc0bf6efbd15fe9cf5ea0feab9))
+* **release:** exclude frontend path from backend package so frontend-only commits don't bump backend ([610d684](https://github.com/Iamdavidonuh/ledger/commit/610d68423012d19766d13773938ddc64ed6fa73c))
+
 ## [0.4.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.3.1...backend-v0.4.0) (2026-10-17)
 
 
