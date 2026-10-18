@@ -261,6 +261,33 @@ impl<S: LedgerStore> Ledger<S> {
         Ok(entry)
     }
 
+    /// Marks an entry as reverted by the bank. Unlike voiding, no reason is
+    /// required -- the bank's action is the reason. A voided entry cannot be
+    /// reverted (void it with a reason instead). A reverted entry cannot be
+    /// reverted again. Same pot-floor guard as voiding.
+    pub async fn revert_entry(&mut self, entry_id: EntryId) -> Result<Entry, LedgerError> {
+        let mut entry = self
+            .store
+            .get_entry(entry_id)
+            .await?
+            .ok_or(LedgerError::EntryNotFound(entry_id))?;
+        if entry.is_voided() {
+            return Err(LedgerError::AlreadyVoided);
+        }
+        if entry.bank_state == BankState::Reverted {
+            return Err(LedgerError::AlreadyReverted);
+        }
+        if let Some(pot_id) = entry.pot_id {
+            let would_be = self.pot_balance(pot_id).await? - entry.amount;
+            if would_be < Decimal::ZERO {
+                return Err(LedgerError::PotWouldGoNegative);
+            }
+        }
+        entry.bank_state = BankState::Reverted;
+        self.store.save_entry(entry.clone()).await?;
+        Ok(entry)
+    }
+
     pub async fn void_entry(
         &mut self,
         entry_id: EntryId,
@@ -1011,6 +1038,103 @@ mod tests {
             ledger.void_entry(entry.id, "second reason").await,
             Err(LedgerError::AlreadyVoided)
         );
+    }
+
+    #[tokio::test]
+    async fn reverting_an_entry_excludes_it_from_the_balance() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let account = ledger
+            .open_account("Checking", eur, AccountKind::Own, dec!(100))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(account.id, a_date(), dec!(-20), "Bank bounced it")
+            .await
+            .unwrap();
+        let reverted = ledger.revert_entry(entry.id).await.unwrap();
+        assert_eq!(reverted.bank_state, BankState::Reverted);
+        assert_eq!(ledger.account_balance(account.id).await, Ok(dec!(100)));
+    }
+
+    #[tokio::test]
+    async fn reverting_twice_is_an_error() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let account = ledger
+            .open_account("Checking", eur, AccountKind::Own, dec!(0))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(account.id, a_date(), dec!(-20), "x")
+            .await
+            .unwrap();
+        ledger.revert_entry(entry.id).await.unwrap();
+        assert_eq!(
+            ledger.revert_entry(entry.id).await,
+            Err(LedgerError::AlreadyReverted)
+        );
+    }
+
+    #[tokio::test]
+    async fn reverting_a_voided_entry_is_an_error() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let eur = Currency::new("EUR").unwrap();
+        let account = ledger
+            .open_account("Checking", eur, AccountKind::Own, dec!(0))
+            .await
+            .unwrap();
+        let entry = ledger
+            .record_manual_entry(account.id, a_date(), dec!(-20), "x")
+            .await
+            .unwrap();
+        ledger.void_entry(entry.id, "a reason").await.unwrap();
+        assert_eq!(
+            ledger.revert_entry(entry.id).await,
+            Err(LedgerError::AlreadyVoided)
+        );
+    }
+
+    #[tokio::test]
+    async fn reverting_a_missing_entry_is_an_error() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let missing = EntryId::generate();
+        assert_eq!(
+            ledger.revert_entry(missing).await,
+            Err(LedgerError::EntryNotFound(missing))
+        );
+    }
+
+    #[tokio::test]
+    async fn reverting_a_pot_tagged_income_entry_that_would_push_the_pot_negative_is_refused() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let (checking, pot, income) = a_pot_holding_twenty(&mut ledger).await;
+        // The pot holds 20 (+50 income, -30 expense); reverting the +50 leaves -30.
+        assert_eq!(
+            ledger.revert_entry(income.id).await,
+            Err(LedgerError::PotWouldGoNegative)
+        );
+        assert_eq!(ledger.pot_balance(pot.id).await, Ok(dec!(20)));
+        // The refused revert left the entry as it was.
+        assert_eq!(
+            ledger.account_balance(checking.id).await,
+            Ok(dec!(1020))
+        );
+    }
+
+    #[tokio::test]
+    async fn reverting_a_pot_tagged_expense_entry_returns_the_money_to_the_pot() {
+        let mut ledger = Ledger::new(InMemoryStore::default());
+        let (checking, pot, _) = a_pot_holding_twenty(&mut ledger).await;
+        let expense = ledger
+            .entries(checking.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|e| e.description == "Camera strap")
+            .unwrap();
+        ledger.revert_entry(expense.id).await.unwrap();
+        assert_eq!(ledger.pot_balance(pot.id).await, Ok(dec!(50)));
     }
 
     #[tokio::test]

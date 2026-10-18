@@ -127,6 +127,15 @@
 			actionError = err instanceof ApiError ? err.message : 'Could not void this entry.';
 		}
 	}
+
+	async function revertEntry(id: string) {
+		actionError = null;
+		try {
+			replaceEntry(await api.entries.revert(id));
+		} catch (err) {
+			actionError = err instanceof ApiError ? err.message : 'Could not mark this entry as reverted.';
+		}
+	}
 </script>
 
 <div class="flex flex-col gap-4 lg:max-w-2xl">
@@ -245,15 +254,18 @@
 									</div>
 								{:else}
 									<div class="flex flex-wrap gap-2 border-t border-border pt-2">
-										{#if entry.source === 'manual' && !entry.confirmed}
-											<Button size="sm" variant="outline" onclick={() => confirmEntry(entry.id)}>Confirm</Button>
+										{#if entry.bank_state !== 'reverted'}
+											{#if entry.source === 'manual' && !entry.confirmed}
+												<Button size="sm" variant="outline" onclick={() => confirmEntry(entry.id)}>Confirm</Button>
+											{/if}
+											<Button
+												size="sm"
+												variant="ghost"
+												href="/entries/split?entry={entry.id}&account={entry.account_id}"
+											>Split</Button>
+											<Button size="sm" variant="ghost" onclick={() => revertEntry(entry.id)}>Mark reverted</Button>
 										{/if}
 										<Button size="sm" variant="ghost" onclick={() => (editingId = entry.id)}>Edit</Button>
-										<Button
-											size="sm"
-											variant="ghost"
-											href="/entries/split?entry={entry.id}&account={entry.account_id}"
-										>Split</Button>
 										<Button size="sm" variant="ghost" onclick={() => startVoiding(entry.id)}>Void</Button>
 									</div>
 								{/if}

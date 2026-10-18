@@ -120,6 +120,7 @@ export const api = {
 		updateMetadata: (id: string, req: UpdateEntryMetadataRequest) => patch<Entry>(`/entries/${id}`, req),
 		editAmount: (id: string, req: EditAmountRequest) => patch<Entry>(`/entries/${id}/amount`, req),
 		void: (id: string, req: VoidRequest) => post<Entry>(`/entries/${id}/void`, req),
+		revert: (id: string) => post<Entry>(`/entries/${id}/revert`),
 		confirm: (id: string) => post<Entry>(`/entries/${id}/confirm`),
 		split: (id: string, parts: { amount: string; category?: string }[]) =>
 			post<{ id: string; amount: string; category?: string }[]>(`/entries/${id}/split`, { parts }),

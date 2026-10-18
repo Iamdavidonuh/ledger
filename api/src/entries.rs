@@ -98,6 +98,7 @@ pub fn router<S: WithLedger>() -> Router<S> {
         .route("/entries/:id", patch(update_metadata::<S>))
         .route("/entries/:id/amount", patch(edit_amount::<S>))
         .route("/entries/:id/void", post(void_entry::<S>))
+        .route("/entries/:id/revert", post(revert_entry::<S>))
         .route("/entries/:id/confirm", post(confirm_entry::<S>))
         .route("/entries/:id/split", post(split_entry::<S>))
         .route("/entries/:id/parts", get(get_entry_parts::<S>))
@@ -201,6 +202,16 @@ async fn void_entry<S: WithLedger>(
     Ok(Json(entry))
 }
 
+async fn revert_entry<S: WithLedger>(
+    State(state): State<S>,
+    Path(id): Path<EntryId>,
+) -> Result<Json<Entry>, AppError> {
+    let entry = state
+        .with_ledger(move |ledger| Box::pin(async move { ledger.revert_entry(id).await }))
+        .await?;
+    Ok(Json(entry))
+}
+
 async fn confirm_entry<S: WithLedger>(
     State(state): State<S>,
     Path(id): Path<EntryId>,
@@ -283,7 +294,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
-    use ledger_core::{AccountKind, Currency};
+    use ledger_core::{AccountKind, BankState, Currency};
     use tower::ServiceExt;
 
     fn test_state() -> crate::state::TestState {
@@ -465,6 +476,80 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    async fn a_recorded_entry(state: &crate::state::TestState, account_id: AccountId) -> Entry {
+        let response = post_json(
+            state.clone(),
+            "/entries",
+            serde_json::json!({"account_id": account_id, "date": "2026-01-15", "kind": "expense", "amount": "20", "description": "x"}),
+        )
+        .await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn reverting_an_entry_marks_it_reverted_and_returns_it_to_the_balance() {
+        let state = test_state();
+        let account_id = an_account(&state).await;
+        let entry = a_recorded_entry(&state, account_id).await;
+        let response = post_json(
+            state.clone(),
+            &format!("/entries/{}/revert", entry.id),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let reverted: Entry = serde_json::from_slice(&body).unwrap();
+        assert_eq!(reverted.bank_state, BankState::Reverted);
+        assert_eq!(
+            state.ledger.lock().await.account_balance(account_id).await,
+            Ok(rust_decimal_macros::dec!(0))
+        );
+    }
+
+    #[tokio::test]
+    async fn reverting_an_entry_twice_is_unprocessable() {
+        let state = test_state();
+        let account_id = an_account(&state).await;
+        let entry = a_recorded_entry(&state, account_id).await;
+        let uri = format!("/entries/{}/revert", entry.id);
+        post_json(state.clone(), &uri, serde_json::json!({})).await;
+        let response = post_json(state, &uri, serde_json::json!({})).await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn reverting_a_voided_entry_is_unprocessable() {
+        let state = test_state();
+        let account_id = an_account(&state).await;
+        let entry = a_recorded_entry(&state, account_id).await;
+        post_json(
+            state.clone(),
+            &format!("/entries/{}/void", entry.id),
+            serde_json::json!({"reason": "typed the wrong amount"}),
+        )
+        .await;
+        let response = post_json(
+            state,
+            &format!("/entries/{}/revert", entry.id),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn reverting_a_missing_entry_is_not_found() {
+        let response = post_json(
+            test_state(),
+            &format!("/entries/{}/revert", EntryId::generate()),
+            serde_json::json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

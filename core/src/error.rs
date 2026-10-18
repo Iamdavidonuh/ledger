@@ -13,6 +13,8 @@ pub enum LedgerError {
     EntryLocked,
     #[error("entry is already voided")]
     AlreadyVoided,
+    #[error("entry is already reverted")]
+    AlreadyReverted,
     #[error("a void reason is required")]
     VoidReasonRequired,
     #[error("entry parts must sum to the entry amount")]
