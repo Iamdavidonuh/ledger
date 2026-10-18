@@ -5,7 +5,8 @@
 	"packages": {
 		".": {
 			"release-type": "rust",
-			"component": "backend"
+			"component": "backend",
+			"exclude-paths": ["frontend"]
 		},
 		"frontend": {
 			"release-type": "node",
