@@ -12,6 +12,7 @@
 	let pots = $state<PotWithBalance[]>([]);
 	let selectedAccountId = $state<string>('');
 	let entries = $state<Entry[]>([]);
+	let allEntries = $state<Entry[]>([]);
 	let loading = $state(true);
 	let entriesLoading = $state(false);
 	let error = $state<string | null>(null);
@@ -20,6 +21,16 @@
 	let editingId = $state<string | null>(null);
 	let search = $state('');
 	let actionError = $state<string | null>(null);
+
+	// Derive unique sorted categories and tags from all loaded entries for autocomplete.
+	const allCategories = $derived(
+		[...new Set(allEntries.flatMap((e) => (e.category ? [e.category] : [])))].sort((a, b) =>
+			a.localeCompare(b)
+		)
+	);
+	const allTags = $derived(
+		[...new Set(allEntries.flatMap((e) => e.tags))].sort((a, b) => a.localeCompare(b))
+	);
 
 	const selectedAccount = $derived(accounts.find((a) => a.id === selectedAccountId));
 	const sortedEntries = $derived([...entries].sort((a, b) => b.date.localeCompare(a.date)));
@@ -64,6 +75,11 @@
 		} finally {
 			loading = false;
 		}
+		// Load all entries in the background for autocomplete suggestions.
+		// Non-blocking: suggestions just won't be available if this fails.
+		api.entries.listForAccounts(accounts.map((a) => a.id))
+			.then((all) => { allEntries = all; })
+			.catch(() => {});
 	});
 
 	async function loadEntries() {
@@ -205,6 +221,8 @@
 									{entry}
 									{pots}
 									{accounts}
+									categories={allCategories}
+									tags={allTags}
 									onupdated={(updated) => {
 										replaceEntry(updated);
 										editingId = null;

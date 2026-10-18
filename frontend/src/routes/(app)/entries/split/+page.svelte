@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api, ApiError, type Entry } from '$lib/api';
+	import CategoryInput from '$lib/components/entries/category-input.svelte';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { Button } from '$lib/components/ui/button';
 	import { formatMoney } from '$lib/format';
@@ -15,6 +16,12 @@
 	}
 
 	let entry = $state<Entry | null>(null);
+	let allEntries = $state<Entry[]>([]);
+	const allCategories = $derived(
+		[...new Set(allEntries.flatMap((e) => (e.category ? [e.category] : [])))].sort((a, b) =>
+			a.localeCompare(b)
+		)
+	);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
@@ -41,6 +48,7 @@
 		}
 		try {
 			const entries = await api.entries.list(accountId);
+			allEntries = entries;
 			entry = entries.find((e) => e.id === entryId) ?? null;
 			if (!entry) error = 'Entry not found.';
 		} catch (err) {
@@ -133,10 +141,9 @@
 							</div>
 							<div class="flex flex-col gap-1">
 								<label for="part-category-{part.id}" class="text-xs font-semibold text-muted">Category</label>
-								<input
+								<CategoryInput
 									id="part-category-{part.id}"
-									type="text"
-									placeholder="Groceries"
+									categories={allCategories}
 									class="min-h-9 rounded-lg border border-border bg-page px-2.5 text-sm"
 									bind:value={part.category}
 								/>

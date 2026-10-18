@@ -1,12 +1,24 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { api, ApiError, type AccountWithBalance, type EntryKind, type PotWithBalance } from '$lib/api';
+	import { api, ApiError, type AccountWithBalance, type Entry, type EntryKind, type PotWithBalance } from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
 	import NavSidebar from '$lib/components/nav-sidebar.svelte';
+	import CategoryInput from '$lib/components/entries/category-input.svelte';
+	import TagsInput from '$lib/components/entries/tags-input.svelte';
 
 	let accounts = $state<AccountWithBalance[]>([]);
 	let pots = $state<PotWithBalance[]>([]);
+	let allEntries = $state<Entry[]>([]);
+
+	const allCategories = $derived(
+		[...new Set(allEntries.flatMap((e) => (e.category ? [e.category] : [])))].sort((a, b) =>
+			a.localeCompare(b)
+		)
+	);
+	const allTags = $derived(
+		[...new Set(allEntries.flatMap((e) => e.tags))].sort((a, b) => a.localeCompare(b))
+	);
 	let loading = $state(true);
 	let loadError = $state<string | null>(null);
 	let submitting = $state(false);
@@ -61,6 +73,10 @@
 		} finally {
 			loading = false;
 		}
+		// Background fetch for autocomplete — non-blocking.
+		api.entries.listForAccounts(accounts.map((a) => a.id))
+			.then((all) => { allEntries = all; })
+			.catch(() => {});
 	});
 
 	async function submit(event: SubmitEvent) {
@@ -279,24 +295,22 @@
 
 					{#if showMore}
 						<div class="flex flex-col gap-4 rounded-xl border border-border bg-card p-4">
-							<label class="flex flex-col gap-2">
-								<span class="text-xs font-semibold text-muted">Category</span>
-								<input
-									type="text"
-									placeholder="Groceries"
-									class="rounded-lg border border-border bg-page p-2.5 text-sm"
-									bind:value={category}
-								/>
-							</label>
-							<label class="flex flex-col gap-2">
-								<span class="text-xs font-semibold text-muted">Tags (comma separated)</span>
-								<input
-									type="text"
-									placeholder="trip, camera"
-									class="rounded-lg border border-border bg-page p-2.5 text-sm"
-									bind:value={tagsInput}
-								/>
-							</label>
+						<label class="flex flex-col gap-2">
+							<span class="text-xs font-semibold text-muted">Category</span>
+							<CategoryInput
+								categories={allCategories}
+								class="rounded-lg border border-border bg-page p-2.5 text-sm"
+								bind:value={category}
+							/>
+						</label>
+						<label class="flex flex-col gap-2">
+							<span class="text-xs font-semibold text-muted">Tags (comma separated)</span>
+							<TagsInput
+								tags={allTags}
+								class="rounded-lg border border-border bg-page p-2.5 text-sm"
+								bind:value={tagsInput}
+							/>
+						</label>
 							{#if potsForAccount.length > 0}
 								<label class="flex flex-col gap-2">
 									<span class="text-xs font-semibold text-muted">Pot</span>

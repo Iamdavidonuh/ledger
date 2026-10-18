@@ -2,6 +2,8 @@
 	import { untrack } from 'svelte';
 	import { api, ApiError, type AccountWithBalance, type Entry, type EntryKind, type PotWithBalance } from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
+	import CategoryInput from './category-input.svelte';
+	import TagsInput from './tags-input.svelte';
 
 	// Category, tags, note and pot are always editable, even on an imported
 	// or confirmed entry -- only amount is locked once an entry is anything
@@ -11,12 +13,16 @@
 		entry,
 		pots,
 		accounts = [],
+		categories = [],
+		tags = [],
 		onupdated,
 		oncancel
 	}: {
 		entry: Entry;
 		pots: PotWithBalance[];
 		accounts?: AccountWithBalance[];
+		categories?: string[];
+		tags?: string[];
 		onupdated: (entry: Entry) => void;
 		oncancel: () => void;
 	} = $props();
@@ -137,20 +143,18 @@
 	<div class="grid gap-2 @md:grid-cols-2">
 		<div class="flex flex-col gap-1">
 			<label for="category-{uid}" class="text-xs font-semibold text-muted">Category</label>
-			<input
+			<CategoryInput
 				id="category-{uid}"
-				type="text"
-				placeholder="Groceries"
+				{categories}
 				class="min-h-9 rounded-lg border border-border bg-page px-2.5 text-sm"
 				bind:value={category}
 			/>
 		</div>
 		<div class="flex flex-col gap-1">
 			<label for="tags-{uid}" class="text-xs font-semibold text-muted">Tags</label>
-			<input
+			<TagsInput
 				id="tags-{uid}"
-				type="text"
-				placeholder="trip, camera"
+				{tags}
 				class="min-h-9 rounded-lg border border-border bg-page px-2.5 text-sm"
 				bind:value={tagsInput}
 			/>
