@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.5.0...backend-v0.5.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **release:** use root package outputs for backend build, add manual dispatch ([b605b93](https://github.com/Iamdavidonuh/ledger/commit/b605b932e5006fa72718db79b33c8809c983b9dd))
+
 ## [0.5.0](https://github.com/Iamdavidonuh/ledger/compare/backend-v0.4.0...backend-v0.5.0) (2026-10-18)
 
 
