@@ -7,6 +7,11 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      backend_tag:
+        description: Backend tag to build and push (e.g. backend-v0.5.0)
+        required: true
 
 permissions:
   contents: write
@@ -16,8 +21,8 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      backend_released: ${{ steps.release.outputs['backend--release_created'] }}
-      backend_tag: ${{ steps.release.outputs['backend--tag_name'] }}
+      backend_released: ${{ steps.release.outputs.release_created }}
+      backend_tag: ${{ steps.release.outputs.tag_name }}
       frontend_released: ${{ steps.release.outputs['frontend--release_created'] }}
       frontend_tag: ${{ steps.release.outputs['frontend--tag_name'] }}
     steps:
@@ -28,14 +33,14 @@ jobs:
 
   build-backend:
     needs: release-please
-    if: ${{ needs.release-please.outputs.backend_released }}
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.release-please.outputs.backend_released }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release-please.outputs.backend_tag }}
+          ref: ${{ inputs.backend_tag || needs.release-please.outputs.backend_tag }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -56,7 +61,7 @@ jobs:
           file: api/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ steps.owner.outputs.name }}/ledger-api:${{ needs.release-please.outputs.backend_tag }}
+            ghcr.io/${{ steps.owner.outputs.name }}/ledger-api:${{ inputs.backend_tag || needs.release-please.outputs.backend_tag }}
             ghcr.io/${{ steps.owner.outputs.name }}/ledger-api:latest
           cache-from: type=gha,scope=ledger-api
           cache-to: type=gha,mode=max,scope=ledger-api
